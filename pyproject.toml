@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "domichess"
+version = "0.1.0"
+description = "A simple chess game for Windows, written in Python"
+license = "GPL-3.0-or-later"
+authors = ["devfred78 <97401939+devfred78@users.noreply.github.com>"]
+readme = "README.md"
+repository = "https://github.com/devfred78/domichess"
+
+[tool.poetry.dependencies]
+python = "~3.11"
+pysimplegui = "~4.60.4"
+chess = "~1.9.3"
+colorlog = "~6.7.0"
+cairosvg = "~2.5.2"
+
+[tool.poetry.group.dev]
+optional = true
+
+[tool.poetry.group.dev.dependencies]
+pyinstaller = "~5.7.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
