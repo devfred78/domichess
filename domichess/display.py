@@ -281,12 +281,6 @@ class Display:
                 default_text=DEFAULT_SEARCH_TIME, size=5, key=Key.WHITE_CPU_DURATION
             )
             white_slider_is_invisible = False
-            # if 'Skill_Level' in default_engine.engine_options:
-            # if 'UCI_LimitStrength' in default_engine.engine_options:
-            # if self.engine_options[chess.WHITE][default_engine.name].UCI_LimitStrength():
-            # self.engine_options[chess.WHITE][default_engine.name].UCI_LimitStrength = False
-            # white_cpu_level_slider_text = sg.Text(Text.SKILL_LEVEL, key = Key.WHITE_CPU_LEVEL_SLIDER_TEXT, visible = True)
-            # white_cpu_level_slider = sg.Slider(range = (self.engine_options[chess.WHITE][default_engine.name].Skill_Level.min,self.engine_options[chess.WHITE][default_engine.name].Skill_Level.max), default_value = self.engine_options[chess.WHITE][default_engine.name].Skill_Level.default, orientation = 'horizontal', enable_events = True, key = Key.WHITE_CPU_LEVEL_SLIDER, disabled = False, visible = True)
             if "UCI_Elo" in default_engine.engine_options:
                 if "UCI_LimitStrength" in default_engine.engine_options:
                     if not self.engine_options[chess.WHITE][
@@ -394,12 +388,6 @@ class Display:
                 default_text=DEFAULT_SEARCH_TIME, size=5, key=Key.BLACK_CPU_DURATION
             )
             black_slider_is_invisible = False
-            # if 'Skill_Level' in default_engine.engine_options:
-            # if 'UCI_LimitStrength' in default_engine.engine_options:
-            # if self.engine_options[chess.BLACK][default_engine.name].UCI_LimitStrength():
-            # self.engine_options[chess.BLACK][default_engine.name].UCI_LimitStrength = False
-            # black_cpu_level_slider_text = sg.Text(Text.SKILL_LEVEL, key = Key.BLACK_CPU_LEVEL_SLIDER_TEXT, visible = True)
-            # black_cpu_level_slider = sg.Slider(range = (self.engine_options[chess.BLACK][default_engine.name].Skill_Level.min,self.engine_options[chess.BLACK][default_engine.name].Skill_Level.max), default_value = self.engine_options[chess.BLACK][default_engine.name].Skill_Level.default, orientation = 'horizontal', enable_events = True, key = Key.BLACK_CPU_LEVEL_SLIDER, disabled = False, visible = True)
             if "UCI_Elo" in default_engine.engine_options:
                 if "UCI_LimitStrength" in default_engine.engine_options:
                     if not self.engine_options[chess.BLACK][
@@ -1142,13 +1130,6 @@ class Display:
         else:
             KEY_CPU_LEVEL_SLIDER_TEXT = Key.BLACK_CPU_LEVEL_SLIDER_TEXT
             KEY_CPU_LEVEL_SLIDER = Key.BLACK_CPU_LEVEL_SLIDER
-
-        # if 'Skill_Level' in self.engines[player][engine_name].engine_options:
-        # if 'UCI_LimitStrength' in self.engines[player][engine_name].engine_options:
-        # if self.engine_options[player][engine_name].UCI_LimitStrength():
-        # self.engine_options[player][engine_name].UCI_LimitStrength = False
-        # self._window[KEY_CPU_LEVEL_SLIDER_TEXT].update(value = Text.SKILL_LEVEL, visible = True)
-        # self._window[KEY_CPU_LEVEL_SLIDER].update(value = self.engine_options[player][engine_name].Skill_Level(), range = (self.engine_options[player][engine_name].Skill_Level.min,self.engine_options[player][engine_name].Skill_Level.max) , disabled = False, visible = True)
         if "UCI_Elo" in self.engines[player][engine_name].engine_options:
             if "UCI_LimitStrength" in self.engines[player][engine_name].engine_options:
                 if not self.engine_options[player][engine_name].UCI_LimitStrength():
@@ -1243,7 +1224,6 @@ class Display:
                                 self.log.debug(f"{engine.name} stopped")
                             except AttributeError:
                                 pass
-                        # self.log.debug(f"Number of references for the engine: {ctypes.c_long.from_address(id(engine)).value}")
                     self.log.debug("The window is closing")
                     break
                 else:
@@ -1254,11 +1234,9 @@ class Display:
 
             elif event == Key.WHITE_TYPE:  # Select the white's type
                 if values[Key.WHITE_TYPE] == Key.WHITE_HUMAN:
-                    # self.log.debug("White player is a local human.")
                     self._window[Key.START].update(disabled=False)
                     self.board_flipped = False  # board not flipped
                 elif values[Key.WHITE_TYPE] == Key.WHITE_CPU:
-                    # self.log.debug("White player is a local CPU.")
                     if (
                         self._helper_engine is None
                     ):  # If no helper engine, then no engine at all
@@ -1272,7 +1250,6 @@ class Display:
                     else:
                         self.board_flipped = False
                 elif values[Key.WHITE_TYPE] == Key.WHITE_NET:
-                    # self.log.debug("White player is a remote opponent.")
                     self._window[Key.START].update(
                         disabled=True
                     )  # Network game not yet implemented
@@ -1285,7 +1262,6 @@ class Display:
 
             elif event == Key.BLACK_TYPE:  # Select the black's type
                 if values[Key.BLACK_TYPE] == Key.BLACK_HUMAN:
-                    # self.log.debug("Black player is a local human.")
                     self._window[Key.START].update(disabled=False)
                     if (
                         values[Key.WHITE_TYPE] == Key.WHITE_HUMAN
@@ -1294,7 +1270,6 @@ class Display:
                     else:
                         self.board_flipped = True
                 elif values[Key.BLACK_TYPE] == Key.BLACK_CPU:
-                    # self.log.debug("Black player is a local CPU.")
                     if (
                         self._helper_engine is None
                     ):  # If no helper engine, then no engine at all
@@ -1303,7 +1278,6 @@ class Display:
                         self._window[Key.START].update(disabled=False)
                     self.board_flipped = False  # board not flipped
                 elif values[Key.BLACK_TYPE] == Key.BLACK_NET:
-                    # self.log.debug("Black player is a remote opponent.")
                     self._window[Key.START].update(
                         disabled=True
                     )  # Network game not yet implemented
@@ -1327,9 +1301,6 @@ class Display:
                 event == Key.WHITE_CPU_LEVEL_SLIDER
             ):  # Change the level for the CPU white player
                 engine_name = values[Key.WHITE_ENGINE_COMBO]
-                # if 'Skill_Level' in self.engines[chess.WHITE][engine_name].engine_options:
-                # self.engine_options[chess.WHITE][engine_name].Skill_Level = values[Key.WHITE_CPU_LEVEL_SLIDER]
-                # # self.log.debug(f"{engine.name}: set Skill Level to {values[Key.WHITE_CPU_LEVEL_SLIDER]} for the white player")
                 if "UCI_Elo" in self.engines[chess.WHITE][engine_name].engine_options:
                     if (
                         "UCI_LimitStrength"
@@ -1338,7 +1309,6 @@ class Display:
                         self.engine_options[chess.WHITE][
                             engine_name
                         ].UCI_LimitStrength = True
-                    # self.log.debug(f"{engine_name}: set UCI_Elo to {values[Key.WHITE_CPU_LEVEL_SLIDER]} for the white player")
                     self.engine_options[chess.WHITE][engine_name].UCI_Elo = values[
                         Key.WHITE_CPU_LEVEL_SLIDER
                     ]
@@ -1347,9 +1317,6 @@ class Display:
                 event == Key.BLACK_CPU_LEVEL_SLIDER
             ):  # Change the level for the CPU black player
                 engine_name = values[Key.BLACK_ENGINE_COMBO]
-                # if 'Skill_Level' in self.engines[chess.BLACK][engine_name].engine_options:
-                # self.engine_options[chess.BLACK][engine_name].Skill_Level = values[Key.BLACK_CPU_LEVEL_SLIDER]
-                # # self.log.debug(f"{engine.name}: set Skill Level to {values[Key.BLACK_CPU_LEVEL_SLIDER]} for the black player")
                 if "UCI_Elo" in self.engines[chess.BLACK][engine_name].engine_options:
                     if (
                         "UCI_LimitStrength"
@@ -1358,7 +1325,6 @@ class Display:
                         self.engine_options[chess.BLACK][
                             engine_name
                         ].UCI_LimitStrength = True
-                    # self.log.debug(f"{engine_name}: set UCI_Elo to {values[Key.BLACK_CPU_LEVEL_SLIDER]} for the black player")
                     self.engine_options[chess.BLACK][engine_name].UCI_Elo = values[
                         Key.BLACK_CPU_LEVEL_SLIDER
                     ]
@@ -1380,11 +1346,6 @@ class Display:
                     white_name = values[Key.WHITE_ENGINE_COMBO]
                     sg.cprint(f"{white_name}, local CPU,", end=" ", t="black")
                     self.log.debug(f"White player: {white_name}, local CPU.")
-                    # self._white_engine = self.engines[chess.WHITE][white_name]
-                    # self._apply_engine_options(self.engine_options[chess.WHITE][white_name], self._white_engine)
-                    # if 'Skill_Level' in self.engines[chess.WHITE][white_name].engine_options:
-                    # sg.cprint(f"Skill level = {self.engines[chess.WHITE][white_name].option.Skill_Level()},", end = " ", t = "black")
-                    # self.log.debug(f"Skill level = {self.engines[chess.WHITE][white_name].option.Skill_Level()}")
                     if (
                         "UCI_Elo"
                         in self.engines[chess.WHITE][white_name].engine_options
@@ -1436,11 +1397,6 @@ class Display:
                     black_name = values[Key.BLACK_ENGINE_COMBO]
                     sg.cprint(f"{black_name}, local CPU.", end=" ", c="white on black")
                     self.log.debug(f"Black player: {black_name}, local CPU.")
-                    # self._black_engine = self.engines[chess.BLACK][black_name]
-                    # self._apply_engine_options(self.engine_options[chess.BLACK][black_name],self._black_engine)
-                    # if 'Skill_Level' in self.engines[chess.BLACK][black_name].engine_options:
-                    # sg.cprint(f"Skill level = {self.engines[chess.BLACK][black_name].option.Skill_Level()},", end = " ", c = "white on black")
-                    # self.log.debug(f"Skill level = {self.engines[chess.BLACK][black_name].option.Skill_Level()}")
                     if (
                         "UCI_Elo"
                         in self.engines[chess.BLACK][black_name].engine_options
