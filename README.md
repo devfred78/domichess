@@ -2,6 +2,7 @@
 ![GitHub license](https://img.shields.io/github/license/devfred78/domichess)
 ![GitHub issues](https://img.shields.io/github/issues/devfred78/domichess)
 ![GitHub pull requests](https://img.shields.io/github/issues-pr/devfred78/domichess)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 # DomiChess
 
@@ -111,6 +112,8 @@ pySimpleGUI [authors](https://github.com/PySimpleGUI) for making **ALL** Python 
 Developers of [Cairo](https://www.cairographics.org/), on which CairoSVG is based, for providing their rich 2D graphics library.
 
 Authors of [PyInstaller](https://github.com/pyinstaller/pyinstaller) for this remarkable program able to bundle a Python application and all its dependencies into a single package.
+
+[Python Software Foundation](https://github.com/psf) for [black](https://github.com/psf/black), their "uncompromising Python code formatter", making your whole code source compliant with [PEP 8](https://peps.python.org/pep-0008/) in only one simple command.
 
 [Make a README](https://www.makeareadme.com/), [Sayan Mondal](https://medium.com/swlh/how-to-make-the-perfect-readme-md-on-github-92ed5771c061), [Hillary Nyakundi](https://www.freecodecamp.org/news/how-to-write-a-good-readme-file/) and [othneildrew](https://github.com/othneildrew/Best-README-Template) for providing very interesting materials to write good README files (far better than I can write by myself !).
 

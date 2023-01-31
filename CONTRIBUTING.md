@@ -242,6 +242,14 @@ Assuming you followed the steps written in the "Git and GitHub section", the gen
 	> You can continue to commit and push changes in response to the reviews. Your pull request will update automatically.
 6. Merge the Pull Request: only users with write permission in the repository can merge pull requests. In the case of the DomiChess project, this capability is only given to the owner of the repository. When your Pull Request is ready to be merged, please be patient, and you will seen soon your amazing feature being incorporated into the main branch, meaning that it will be available in the next release !
 
+## Format your code
+
+The code format has to be [PEP 8](https://peps.python.org/pep-0008/) compliant. To do so, you can simply go to the root of your local clone repository and type the following command:
+
+```batchfile
+poetry run black .
+```
+
 ## Build the executable
 
 To bundle all the source code and its dependencies (including Python itself) into a single executable file, just launch the following batch script:
