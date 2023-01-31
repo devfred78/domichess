@@ -19,6 +19,12 @@ optional = true
 
 [tool.poetry.group.dev.dependencies]
 pyinstaller = "~5.7.0"
+black = "~22.12.0"
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
 
 [build-system]
 requires = ["poetry-core"]
