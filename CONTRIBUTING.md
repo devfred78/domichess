@@ -202,7 +202,7 @@ Assuming you followed the steps written in the "Git and GitHub section", the gen
 
 1. Sync the `main` branch of your local clone with the corresponding branch in the upstream repository (original DomiChess repository):
 	```batchfile
-	:: Fetch the branches and their respective commints from the upstream repository
+	:: Fetch the branches and their respective commits from the upstream repository
 	git fetch upstream
 	
 	:: Check out your local main branch
@@ -261,5 +261,118 @@ build.bat
 This command calls [Pyinstaller](https://pyinstaller.org/en/stable/index.html), and takes the specific parameters from the [build.spec](https://github.com/devfred78/domichess/blob/main/build.spec) file.
 
 The build process releases a file in the `dist` folder, named `domichess_X.Y.Z_<64/32>bit.exe`, with `X.Y.Z` the version number found in the [pyproject.toml](https://github.com/devfred78/domichess/blob/main/pyproject.toml) file, and 32 or 64 bit according to the platform where the build has performed.
+
+> If an 'EndUpdateRessource' exception raises, don't hesitate to execute `build.bat` again and again, until its successful issue.
+
+## Build a 32-bit executable on a Windows 64-bit platform
+
+It is completely possible to build a 32-bit executable of DomiChess with Windows 64-bit. Furthermore, it is possible to build 32-bit **and** 64-bit executables on the same platform, assuming Windows is 64-bit.
+
+To do that, you need to install both 64-bit and 32-bit editions of Python, following the hereafter steps **in that order**:
+
+1. Install at least on version of the 64-bit edition of Python
+> To do this, just follow instructions in the *Python* section.
+2. Install `Poetry`
+> On the same way, just follow instructions in the *Poetry* section
+3. install one or more versions of the 32-bit edition of Python
+> For that, follow the instructions just below
+
+### Install additional 32-bit edition of Python
+
+Let's suppose the aimed version is `3.11.1`.
+
+Download the suitable installer of this version from [the official downloading page](https://www.python.org/downloads/windows/).
+
+Once downloaded, execute the installer, and the following window quickly appears:
+
+![Install Python 3.11.1_32b](assets/Python11_32b_install_1.png)
+
+Note that this time the `Use admin privileges when installing py.exe` option is uncheckable. So, simply **uncheck** `Add python.exe to PATH` (if not already unchecked), then click on `Customize installation`.
+
+On the "Optional Features" window:
+
+![Install Python 3.111.1_32b: Optional Features](assets/Python11_32b_install_2.png)
+
+- Checking `tcl/tk and IDLE` is mandatory, since the DomiChess GUI makes an intensive use of the `tkinter` library, itself using `tk`
+- Checking `pip` is optional but recommended
+- Please note that this time the options `py launcher` and `for all users` are uncheckable, since `py` has been already installed by the first, 64-bit Python installation.
+- Leave the other boxes **unchecked**
+
+Then click on the `Next` button.
+
+On the "Advanced Options" window:
+
+![Install Python 3.11.1_32b: Advanced Options](assets/Python11_32b_install_3.png)
+
+- Checking `Install Python 3.11 for all users` and `Precompile standard library` is highly recommended
+- Checking `Create shortcuts for installed applications` is only usefull if you want to easily access to this version of Python from your desktop. If not you can leave this box **unchecked** safely
+- Leave the other boxes **unchecked**, even `Add Python to environment variables` (you will use Poetry to reach Python)
+
+Please note the install location (here `C:\Program Files (x86)\Python311-32`), you will use it later during the virtual environment initialization.
+
+Finally, click on the `Install` button, and leave the installer to do its job.
+
+### Clone (again) your forked repository
+
+The cleaner way to work in the same time with both 32-bit and 64-bit editions of DomiChess, is to use two independant, separated (Python) virtual environments. If you followed the instructions written in the main *Git*, *Python* and *Poetry* sections, you've got already the 64-bit environment.
+To get the 32-bit one:
+1. Create a separated folder dedicated for the 32-bit workspace, **outside** the 64-bit one
+> For instance, you can call it `domichess-32b`
+2. Clone again the repository in this folder:
+	- Open a terminal window and go to the location where you want the cloned directory
+	- Type the following command (with your GitHub username instead of `<GITHUB_USERNAME>`:
+		```batchfile
+		git clone https://github.com/<GITHUB_USERNAME>/DomiChess
+		```
+		
+		> This command expects you chose to clone your repository using HTTPS, and to keep the same repository name during the forking stage.
+		> Adjust the command if you make a different choice.
+3. Add the original repository as the `upstream` remote repository to be allowed to sync further changes made in the orginal repository with your local clone:
+	```batchfile
+	git remote add upstream https://github.com/devfred78/domichess.git
+	```
+
+### Create (again) a Python virtual environment
+
+Stay in the 32-bit directory and type the following command to create the suitable virtual environment:
+
+```batchfile
+poetry env use <PATH_TO_PYTHON>
+```
+
+with `<PATH_TO_PYTHON>` the full path to the 32-bit Python interpreter that you previously noted during the Python installation. For instance, it can be `"C:\Program Files (x86)\Python311-32\python.exe"` (with the quote marks). Be aware to provide the correct version of Python (refer to the `pyproject.toml` file).
+
+Then, install the needed packages with the following command, with capability to generate the deployable bundle:
+
+```batchfile
+poetry install --with dev --sync
+```
+
+This command ensures that the locked dependencies in the `poetry.lock` file are the only ones present in the environment, removing anything that's not necessary.
+
+### Generate the 32-bit executable
+
+First, synchronise your cloned repository with the upstream one, by typing the following commands:
+
+```batchfile
+:: Fetch the branches and their respective commits from the upstream repository
+git fetch upstream
+
+:: Check out your local main branch
+git checkout main
+
+:: Merge the changes from the upstream main branch
+git merge upstream/main
+```
+
+To bundle all the source code and its dependencies (including Python itself) into a single executable file, just launch the following batch script:
+
+```batchfile
+build.bat
+```
+
+This command calls [Pyinstaller](https://pyinstaller.org/en/stable/index.html), and takes the specific parameters from the [build.spec](https://github.com/devfred78/domichess/blob/main/build.spec) file.
+
+The build process releases a file in the `dist` folder, named `domichess_X.Y.Z_32bit.exe`, with `X.Y.Z` the version number found in the [pyproject.toml](https://github.com/devfred78/domichess/blob/main/pyproject.toml) file.
 
 > If an 'EndUpdateRessource' exception raises, don't hesitate to execute `build.bat` again and again, until its successful issue.
