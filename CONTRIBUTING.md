@@ -60,13 +60,13 @@ Let's suppose it is Python 3.11.1.
 
 Once downloaded, execute the installer, and the following window quickly appears:
 
-![Install Python 3.11](assets/Python11_install_1.png)
+![Install Python 3.11](assets/Python11_install_1.PNG)
 
 Check `Use admin privileges when installing py.exe` and **uncheck** `Add python.exe to PATH` (if not already unchecked). Then click on `Customize installation`.
 
 On the "Optional Features" window:
 
-![Install Python 3.11: Optional Features](assets/Python11_install_2.png)
+![Install Python 3.11: Optional Features](assets/Python11_install_2.PNG)
 
 - Checking `tcl/tk and IDLE` is mandatory, since the DomiChess GUI makes an intensive use of the `tkinter` library, itself using `tk`
 - Checking `pip`, `py launcher` and `for all users` is optional but recommended
@@ -76,7 +76,7 @@ Then click on the `Next` button.
 
 On the "Advanced Options" window:
 
-![Install Python 3.11: Advanced Options](assets/Python11_install_3.png)
+![Install Python 3.11: Advanced Options](assets/Python11_install_3.PNG)
 
 - Checking `Install Python 3.11 for all users` and `Precompile standard library` is highly recommended
 - Checking `Create shortcuts for installed applications` is only usefull if you want to easily access to this version of Python from your desktop
@@ -96,13 +96,13 @@ Download the suitable installer of this version from [the official downloading p
 
 Once downloaded, execute the installer, and the following window quickly appears:
 
-![Install Python 3.10](assets/Python10_install_1.png)
+![Install Python 3.10](assets/Python10_install_1.PNG)
 
 Note that this time the `Use admin privileges when installing py.exe` option is uncheckable. So, simply **uncheck** `Add python.exe to PATH` (if not already unchecked), then click on `Customize installation`.
 
 On the "Optional Features" window:
 
-![Install Python 3.10: Optional Features](assets/Python10_install_2.png)
+![Install Python 3.10: Optional Features](assets/Python10_install_2.PNG)
 
 - Checking `tcl/tk and IDLE` is mandatory, since the DomiChess GUI makes an intensive use of the `tkinter` library, itself using `tk`
 - Checking `pip` is optional but recommended
@@ -113,7 +113,7 @@ Then click on the `Next` button.
 
 On the "Advanced Options" window:
 
-![Install Python 3.10: Advanced Options](assets/Python10_install_3.png)
+![Install Python 3.10: Advanced Options](assets/Python10_install_3.PNG)
 
 - Checking `Install Python 3.10 for all users` and `Precompile standard library` is highly recommended
 - Checking `Create shortcuts for installed applications` is only usefull if you want to easily access to this version of Python from your desktop. If not you can leave this box **unchecked** safely
@@ -285,13 +285,13 @@ Download the suitable installer of this version from [the official downloading p
 
 Once downloaded, execute the installer, and the following window quickly appears:
 
-![Install Python 3.11.1_32b](assets/Python11_32b_install_1.png)
+![Install Python 3.11.1_32b](assets/Python11_32b_install_1.PNG)
 
 Note that this time the `Use admin privileges when installing py.exe` option is uncheckable. So, simply **uncheck** `Add python.exe to PATH` (if not already unchecked), then click on `Customize installation`.
 
 On the "Optional Features" window:
 
-![Install Python 3.111.1_32b: Optional Features](assets/Python11_32b_install_2.png)
+![Install Python 3.111.1_32b: Optional Features](assets/Python11_32b_install_2.PNG)
 
 - Checking `tcl/tk and IDLE` is mandatory, since the DomiChess GUI makes an intensive use of the `tkinter` library, itself using `tk`
 - Checking `pip` is optional but recommended
@@ -302,7 +302,7 @@ Then click on the `Next` button.
 
 On the "Advanced Options" window:
 
-![Install Python 3.11.1_32b: Advanced Options](assets/Python11_32b_install_3.png)
+![Install Python 3.11.1_32b: Advanced Options](assets/Python11_32b_install_3.PNG)
 
 - Checking `Install Python 3.11 for all users` and `Precompile standard library` is highly recommended
 - Checking `Create shortcuts for installed applications` is only usefull if you want to easily access to this version of Python from your desktop. If not you can leave this box **unchecked** safely
