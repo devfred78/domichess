@@ -13,6 +13,7 @@ pysimplegui = "~4.60.4"
 chess = "~1.9.3"
 colorlog = "~6.7.0"
 cairosvg = "~2.5.2"
+netifaces-plus = "^0.12.0"
 
 [tool.poetry.group.dev]
 optional = true
