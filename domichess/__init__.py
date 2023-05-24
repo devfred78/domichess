@@ -17,7 +17,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 # Import standard modules
-from enum import Enum, StrEnum, auto
+from enum import Enum, StrEnum, IntEnum, auto
 from collections import namedtuple
 import random
 
@@ -51,6 +51,16 @@ class Key(StrEnum):  # Keys for window elements
     BLACK_CPU_LEVEL_SLIDER = auto()
     WHITE_CPU_LEVEL_SLIDER_TEXT = auto()
     BLACK_CPU_LEVEL_SLIDER_TEXT = auto()
+    WHITE_NET_LAN_RADIO = auto()
+    BLACK_NET_LAN_RADIO = auto()
+    WHITE_NET_SERVER_RADIO = auto()
+    BLACK_NET_SERVER_RADIO = auto()
+    WHITE_NET_RADIO_GROUP = auto()
+    BLACK_NET_RADIO_GROUP = auto()
+    WHITE_NET_LAN_TABLE = auto()
+    BLACK_NET_LAN_TABLE = auto()
+    WHITE_NET_SERVER_TEXT = auto()
+    BLACK_NET_SERVER_TEXT = auto()
     WHITE_HUMAN = auto()
     BLACK_HUMAN = auto()
     WHITE_CPU = auto()
@@ -75,6 +85,8 @@ class Key(StrEnum):  # Keys for window elements
     QUEEN = auto()
     REPLY_TO_HELP = auto()
     CPU_OR_REMOTE_MOVE = auto()
+    NEW_REMOTE_PLAYER = auto()
+    CHANGE_OF_REMOTE_GAME_OR_PLAYER_NAME = auto()
 
 
 class KeyPopup(Enum):  # Keys for the dynamic popups
@@ -114,11 +126,13 @@ class DefaultText(StrEnum):  # Default texts displayed on the window
     LOCAL = "local"
     NOT_YET_IMPLEMENTED = "Not yet implemented"
     CURRENT_GAME = "Current game:"
+    GAME_NAME = "Game name"
     CURRENT_PLAYER = "Current player:"
     WHITE = "White"
     BLACK = "Black"
     WHITE_PLAYER = "White player"
     BLACK_PLAYER = "Black player"
+    PLAYER_NAME = "Player name"
     WHITE_PLAYER_NAME = "White player's name:"
     BLACK_PLAYER_NAME = "Black player's name:"
     ENGINE_TURN_DURATION = "Turn duration (s):"
@@ -153,7 +167,12 @@ class DefaultText(StrEnum):  # Default texts displayed on the window
     POWERED_BY = "powered by"
     CLAIM_FOR_THREEFOLD = "Claim for threefold repetition"
     CLAIM_FOR_FIFTY = "Claim for fifty-move rule"
-
+    LAN = "LAN"
+    REMOTE_SERVER = "Remote server"
+	
+class DefaultNetworkPort(IntEnum): # Default network elements
+    FINDER_LAN_PORT = 10035 # Listening UDP port of the finder server over the LAN
+    GAME_LAN_PORT = 11035 # Listening TCP port of the game server for a LAN game
 
 class DefaultBoardColor(StrEnum):  # Default colors of the board
     LIGHT_SQUARE = "#ffce9e"
