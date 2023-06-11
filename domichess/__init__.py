@@ -95,7 +95,7 @@ class KeyPopup(Enum):  # Keys for the dynamic popups
     PROMOTION = auto()
 
 
-class Draw(Enum):  # Types of draws
+class Draw(IntEnum):  # Types of draws
     STALEMATE = auto()
     THREEFOLD = auto()
     FIVEFOLD = auto()

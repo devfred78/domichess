@@ -26,11 +26,13 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 # Standard modules
 # -----------------
 from enum import Enum, StrEnum, IntEnum, auto
+import errno
 import ipaddress
 import json
 import logging
+import os
 import socket
-from socketserver import ThreadingUDPServer, DatagramRequestHandler
+from socketserver import ThreadingUDPServer, ThreadingTCPServer, DatagramRequestHandler, StreamRequestHandler
 import struct
 import sys
 import threading
@@ -44,8 +46,8 @@ import netifaces
 
 # Internal modules
 # -----------------
-from domichess import Type
-from domichess.game import Player
+from domichess import Type, Draw
+from domichess.game import Player, Game
 
 # namedtuples
 # ------------
@@ -61,10 +63,18 @@ class opcode(IntEnum):  # operations for network transactions
     PLAYERFULL = auto()  # All characteristics of the player
     GAMENAME = auto()  # The name of the game hosted by the server
     GAMEUUID = auto()  # UUID of the game
+    GAMEFULL = auto()  # The name and the UUID of a game
     GAMEJOIN = auto()  # Join the remote game
     GAMELEAVE = auto()  # Leave the remote game
     GAMESTART = auto()  # The local game is about to start
+    GAMEDELETE = auto() # Delete a game
+    WITHDRAWAL = auto()  # Abord the current game
+    MOVE = auto()   # A chess move
+    CLAIM = auto()  # A claim for a draw
     QUIT = auto()  # Quit the network
+    UNREACHABLE = auto()  # The opponent is unreachable
+    SUCCESSFUL = auto()  # Action successfully completed
+    UNSUCCESSFUL = auto()  # Action not performed correctly
 
 
 # Global constants
@@ -287,7 +297,7 @@ class LANFinderServer(ThreadingUDPServer):
 
     Parameters:
             port:
-                    The port number on which the server is listenning to.
+                    The port number on which the server is listening to.
             server_port:
                     If you want to specify a distinct port for the current server. Mainly for test or investigation purposes. In most cases leave it unmodified.
             logger:
@@ -297,7 +307,7 @@ class LANFinderServer(ThreadingUDPServer):
             local_address:
                     IPv4 address of the local host. **read-only**
             port:
-                    The port number on which the server is listenning to. **read-only**
+                    The port number on which the server is listening to. **read-only**
             broad_addr:
                     List of string representations of the broadcast addresses, using the IPv4 form (like `100.50.200.5`). **read-only** (but mutable)
             play_addr:
@@ -397,7 +407,7 @@ class LANFinderServer(ThreadingUDPServer):
 
     @property
     def port(self) -> int:
-        # The port number on which the server is listenning to.
+        # The port number on which the server is listening to.
         return self._port
 
     @property
@@ -419,7 +429,7 @@ class LANFinderServer(ThreadingUDPServer):
         """
         Starts the server and seeks other players on the LAN.
 
-        If `blocking`is False (the default), the server is executed in a separated thread - and so the method returns immediately. If True, the function blocks until the method `shutdown()`is called in a different thread.
+        If `blocking`is False (the default), the server is executed in a separated thread - and then the method returns immediately. If True, the function blocks until the method `shutdown()` is called in a different thread.
 
         Parameters:
                 blocking:
@@ -815,6 +825,916 @@ class LANFinderServer(ThreadingUDPServer):
         for addr in self.play_addr:
             self.quit_game(addr)
 
+
+class PlayingHandler(StreamRequestHandler):
+    """
+    Handler instanciated in response to a request to the playing server.
+    """
+    
+    def handle(self):
+        """
+        Analyses a message sent by a client.
+        """
+        data = self.request.recv(1024).strip()
+        recv_opcode = data[0]
+        if recv_opcode == opcode.GAMEFULL:
+            game_full = json.loads(str(data[1:], "utf-8"))
+            if game_full["uuid"] not in [game["uuid"] for game in self.server.games]:
+                with self.server.games_lock:
+                    self.server.games.append({"name":game_full["name"], "uuid":game_full["uuid"], chess.WHITE:None, chess.BLACK:None})
+                self.server.log.debug(f"A new game named {game_full['name']} is available on the server")
+                self.request.sendall(bytes([opcode.SUCCESSFUL]))
+            else:
+                self.server.log.debug(f"The game named {game_full['name']} is already recorded on the server.")
+                self.request.sendall(bytes([opcode.UNSUCCESSFUL]))
+        
+        elif recv_opcode == opcode.GAMEDELETE:
+            game_uuid = json.loads(str(data[1:], "utf-8"))
+            game_to_erase = -1
+            for rank, game in enumerate(self.server.games):
+                if game["uuid"] == game_uuid:
+                    game_to_erase = rank
+                    break
+            if game_to_erase >= 0:
+                with self.server.games_lock:
+                    del self.server.games[game_to_erase]
+                self.server.log.debug(f"Game with UUID = {game_uuid} is deleted.")
+                self.request.sendall(bytes([opcode.SUCCESSFUL]))
+            else:
+                self.server.log.debug(f"Game with UUID = {game_uuid} does not exist and cannot be deleted.")
+                self.request.sendall(bytes([opcode.UNSUCCESSFUL]))
+        
+        elif recv_opcode == opcode.GAMEJOIN:
+            game_join = json.loads(str(data[1:], "utf-8"))
+            game_to_join = -1
+            for rank, game in enumerate(self.server.games):
+                if game["uuid"] == game_join["game_uuid"]:
+                    game_to_join = rank
+                    break
+            if game_to_join >= 0:
+                if self.server.games[game_to_join][game_join["player_color"]] is not None:
+                    self.server.log.warning(f"The {'white' if game_join['player_color'] else 'black'} opponent of the game {self.server.games[game_to_join]['name']} was already designated, and will be replaced by a new one.")
+                with self.server.games_lock:
+                   self.server.games[game_to_join][game_join["player_color"]] = {"name":game_join["player_name"], "uuid":game_join["player_uuid"], "socket":self.request}
+                self.server.log.debug(f"The player {game_join['player_name']} has joined the game {self.server.games[game_to_join]['name']} as {'white' if game_join['player_color'] else 'black'} opponent.")
+                self.request.sendall(bytes([opcode.SUCCESSFUL]))
+            else:
+                self.server.log.warning(f"No game with UUID = {game_join['game_uuid']} available to join.")
+                self.request.sendall(bytes([opcode.UNSUCCESSFUL]))
+        
+        elif recv_opcode == opcode.MOVE:
+            move = json.loads(str(data[1:], "utf-8"))
+            game_to_move = -1
+            for rank, game in enumerate(self.server.games):
+                if (game[chess.WHITE] is not None) and (game[chess.WHITE]["uuid"] == move["player_uuid"]):
+                    color = chess.WHITE
+                    game_to_move = rank
+                    break
+                elif (game[chess.BLACK] is not None) and (game[chess.BLACK]["uuid"] == move["player_uuid"]):
+                    color = chess.BLACK
+                    game_to_move = rank
+                    break
+            if game_to_move >= 0:
+                if self.server.games[game_to_move][not color] is not None:
+                    move_to_send = {"player_uuid": move["player_uuid"], "move":move["move"]}
+                    serialized_move = json.dumps(move_to_send)
+                    sock = self.server.games[game_to_move][not color]["socket"]
+                    try:
+                        sock.sendall(bytes([opcode.MOVE]) + bytes(serialized_move, "utf-8"))
+                        self.server.log.debug(f"The move {move['move']} has been successfully relayed to the opponent.")
+                        self.request.sendall(bytes([opcode.SUCCESSFUL]))
+                    except OSError as err:
+                        self._log.error(f"Network error: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                        try:
+                            sock.shutdown(socket.SHUT_RDWR)
+                            sock.close()
+                        except OSError:
+                            pass # Already disconnected: nothing else to do anymore
+                        self.server.games[game_to_move][not color]["socket"] = None
+                        self.server.log.warning(f"The move {move['move']} has not been relayed because the opponent is not available.")
+                        self.request.sendall(bytes([opcode.UNREACHABLE]))
+                else:
+                    self.server.log.warning(f"The move {move['move']} has not been relayed because the opponent is not available.")
+                    self.request.sendall(bytes([opcode.UNREACHABLE]))
+            else:
+                self.server.log.warning(f"The player with UUID = {move['player_uuid']} is not known, his move {move['move']} has not been relayed.")
+                self.request.sendall(bytes([opcode.UNSUCCESSFUL]))
+                
+        elif recv_opcode == opcode.CLAIM:
+            claim = json.loads(str(data[1:], "utf-8"))
+            game_to_claim = -1
+            for rank, game in enumerate(self.server.games):
+                if (game[chess.WHITE] is not None) and (game[chess.WHITE]["uuid"] == claim["player_uuid"]):
+                    color = chess.WHITE
+                    game_to_claim = rank
+                    break
+                elif (game[chess.BLACK] is not None) and (game[chess.BLACK]["uuid"] == claim["player_uuid"]):
+                    color = chess.BLACK
+                    game_to_claim = rank
+                    break
+            if game_to_claim >= 0:
+                if self.server.games[game_to_claim][not color] is not None:
+                    claim_to_send = {"player_uuid": claim["player_uuid"], "claim":claim["claim"]}
+                    serialized_claim = json.dumps(claim_to_send)
+                    sock = self.server.games[game_to_claim][not color]["socket"]
+                    try:
+                        sock.sendall(bytes([opcode.CLAIM]) + bytes(serialized_claim, "utf-8"))
+                        self.server.log.debug(f"The claim {claim['claim']} has been successfully relayed to the opponent.")
+                        self.request.sendall(bytes([opcode.SUCCESSFUL]))
+                    except OSError as err:
+                        self._log.error(f"Network error: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                        try:
+                            sock.shutdown(socket.SHUT_RDWR)
+                            sock.close()
+                        except OSError:
+                            pass # Already disconnected: nothing else to do anymore
+                        self.server.games[game_to_claim][not color]["socket"] = None
+                        self.server.log.warning(f"The claim {claim['claim']} has not been relayed because the opponent is not available.")
+                        self.request.sendall(bytes([opcode.UNREACHABLE]))
+                else:
+                    self.server.log.warning(f"The claim {claim['claim']} has not been relayed because the opponent is not available.")
+                    self.request.sendall(bytes([opcode.UNREACHABLE]))
+            else:
+                self.server.log.warning(f"The player with UUID = {claim['player_uuid']} is not known, his claim {claim['claim']} has not been relayed.")
+                self.request.sendall(bytes([opcode.UNSUCCESSFUL]))
+		
+        elif recv_opcode == opcode.WITHDRAWAL:
+            abord = json.loads(str(data[1:], "utf-8"))
+            game_to_abord = -1
+            for rank, game in enumerate(self.server.games):
+                if (game[chess.WHITE] is not None) and (game[chess.WHITE]["uuid"] == abord["player_uuid"]):
+                    color = chess.WHITE
+                    game_to_abord = rank
+                    break
+                elif (game[chess.BLACK] is not None) and (game[chess.BLACK]["uuid"] == abord["player_uuid"]):
+                    color = chess.BLACK
+                    game_to_abord = rank
+                    break
+            if game_to_abord >= 0:
+                if self.server.games[game_to_abord][not color] is not None:
+                    abord_to_send = {"player_uuid": abord["player_uuid"]}
+                    serialized_abord = json.dumps(abord_to_send)
+                    sock = self.server.games[game_to_abord][not color]["socket"]
+                    try:
+                        sock.sendall(bytes([opcode.GAMEABORD]) + bytes(serialized_abord, "utf-8"))
+                        self.server.log.debug(f"The withdrawal has been successfully relayed to the opponent.")
+                        self.request.sendall(bytes([opcode.SUCCESSFUL]))
+                    except OSError as err:
+                        self._log.error(f"Network error: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                        try:
+                            sock.shutdown(socket.SHUT_RDWR)
+                            sock.close()
+                        except OSError:
+                            pass # Already disconnected: nothing else to do anymore
+                        self.server.games[game_to_abord][not color]["socket"] = None
+                        self.server.log.warning("The withdrawal has not been relayed because the opponent is not available.")
+                        self.request.sendall(bytes([opcode.UNREACHABLE]))
+                else:
+                    self.server.log.warning("The withdrawal has not been relayed because the opponent is not available.")
+                    self.request.sendall(bytes([opcode.UNREACHABLE]))
+            else:
+                self.server.log.warning(f"The player with UUID = {abord['player_uuid']} is unknown, his abording has not been relayed.")
+                self.request.sendall(bytes([opcode.UNSUCCESSFUL]))
+
+        elif recv_opcode == opcode.KEEPALIVE:
+            self.server.log.debug(f"Receipt of a KEEPALIVE from {self.client_address[0]}")
+
+class PlayingServer(ThreadingTCPServer):
+    """
+    This class implements a server for playing a game between 2 opponents. It inherits the [socketserver.ThreadingTCPServer class](https://docs.python.org/3/library/socketserver.html#socketserver.ThreadingTCPServer).
+    
+    Once the method `server_start()` is called, this server waits for a connexion on the given port, on all IP interfaces. In this case, all methods beginning by `server_` or `client_` are available.
+    
+    Please note that this class can also be used as a client: for that, the `server_start()` should simply not be called. In this case, all methods beginning by `client_` are available, but not those beginning by `server_`.
+    
+    Parameters:
+        port:
+            The port number on which the server is listening to.
+        logger:
+            The parent logger used to track events that append when the instance is running. Mainly for status monitoring or fault investigation purposes. If None (the default), no event is tracked.
+    
+    Attributes:
+        port:
+            The port number on which the server is listening to. **read-only**
+        started:
+            `True` if the server is running. `False` otherwise. **read-only**
+        games:
+            List of the games currently playing. Each value is a dictionnary {"name": name_of_the_game, "uuid": UUID_of_the_game, chess.WHITE: player|None, chess.BLACK: player|None}, with *player* itself a dictionnary {"name": name_of_the_player, "uuid": UUID_of_the_player, "socket": socket_connected_to_the_remote_player}. **read-only** (but mutable)
+        client_socket:
+            Socket connected to the remote server, in case of usage of this class as a client.
+        client_is_connected:
+            True if the client is connected to the server, False otherwise. **read-only**
+        client_game:
+            Game played by the client.
+        log (logging.Logger):
+            Logger used to track events that append when the instance is running. Child of the `logger` provided, or a fake logger with a null handler. **read-only**
+    """
+    def __init__(self, port: int, logger: logging.Logger|None = None):
+        if logger is None:
+            self._log = logging.getLogger("PlayingServer")
+            self._log.addHandler(logging.NullHandler())
+        else:
+            self._log = logger.getChild("PlayingServer")
+
+        self._log.debug("--- Playing Server initialization ---")
+        
+        super().__init__(("", port), RequestHandlerClass=PlayingHandler, bind_and_activate=False)
+        
+        self._started = False
+        self._port = port
+        
+        self._games = [{"name":"", "uuid":"", chess.WHITE:None, chess.BLACK:None}]
+        self.games_lock = threading.Lock()
+        
+        self._client_socket = None
+        self._client_is_connected = False
+        self._client_game = None
+    
+    @property
+    def started(self) -> bool:
+        # `True` if the server is running. `False` otherwise.
+        return self._started
+    
+    @property
+    def port(self) -> int:
+        # The port number on which the server is listening to.
+        return self._port
+        
+    @property
+    def log(self) -> logging.Logger:
+        # Logger used to track events that append when the instance is running. Child of the `logger` provided, or a fake logger with a null handler.
+        return self._log
+    
+    @property
+    def games(self) -> list:
+        # List of the games currently playing
+        return self._games
+    
+    @property
+    def client_socket(self) -> socket.socket:
+        # Socket connected to the remote server, in case of usage of this class as a client.
+        return self._client_socket
+    
+    @client_socket.setter
+    def client_socket(self, value):
+        if isinstance(value, socket.socket):
+            self._client_socket = value
+        else:
+            self._log.error("`client_socket` only accepts socket.socket objects.")
+    
+    @property
+    def client_is_connected(self) -> bool:
+        # True if the client is connected to the server, False otherwise.
+        return self._client_is_connected
+    
+    @property
+    def client_game(self) -> Game:
+        # Game played by the client
+        return self._client_game
+    
+    @client_game.setter
+    def client_game(self, value):
+        if isinstance(value, Game):
+            self._client_game = value
+        else:
+            self._log.error("`client_game` only accepts domichess.game.Game objects.")
+    
+    ### Server only methods ###
+
+    def server_start(self, blocking:bool = False):
+        """
+        Starts the server and listens to on all IP interfaces.
+
+        If `blocking`is False (the default), the server is executed in a separated thread - and then the method returns immediately. If True, the function blocks until the method `server_shutdown()` is called in a different thread.
+
+        Parameters:
+            blocking:
+                indicates whether the method blocks (True) or returns immediately (False)
+        """
+        if not self._started:
+            super().server_bind()
+            super().server_activate()
+            
+            if blocking:
+                self._log.info("Server activated in blocking mode. Stop it with CTRL-C.")
+                self._log.info(f"Server listening at port {self.port}")
+                self._started = True
+                self.serve_forever()
+            else:
+                self._log.info("Server activated in non-blocking mode.")
+                self._log.info(f"Server listening at port {self.port}")
+                server_thread = threading.Thread(target=self.serve_forever)
+                server_thread.daemon = True
+                self._started = True
+                server_thread.start()
+    
+    def server_shutdown(self):
+        """
+        Tells the listening server loop to stop and wait until it does. `server_shutdown()` must be called while listening server loop is running in a different thread otherwise it will deadlock.
+        """
+        if self._started:
+            super().shutdown()
+            self._started = False
+        else:
+            self._log.warning("The server method `server_shutdown()` has been called (with no effect) in a `PlayingServer` instance in *client* state, or the server has been already shutted down.")
+        
+    
+    ### Client methods ###
+    
+    def client_connect(self, addr:str, timeout:int|float|None = socket.getdefaulttimeout()) -> bool:
+        """
+        Connects to the server hosted at the given IPv4 address.
+        
+        In case of a successful connection, stores the socket in the `client_socket` attribute.
+        
+        Parameters:
+            addr:
+                IPv4 address of the remote server (ex: `100.50.200.5`)
+            timeout:
+                Set a timeout (in seconds) on the created socket instance before attempting to connect. If no timeout is supplied, the global default timeout setting returned by `[socket.getdefaulttimeout()](https://docs.python.org/3/library/socket.html?highlight=socket#socket.getdefaulttimeout)` is used (None by default, meaning that the socket is put in blocking mode).
+        
+        Returns:
+            True if the connection is a success, False otherwise.
+        """
+        try:
+            self._client_socket = socket.create_connection((addr, self.port), timeout=timeout)
+            self._client_socket.settimeout(timeout)
+        except TimeoutError:
+            self._log.error("Time out on connection attempt.")
+            self._client_is_connected = False
+        except ConnectionRefusedError:
+            self._log.error("Connection attempt refused by the server.")
+            self._client_is_connected = False
+        except ConnectionAbordedError:
+            self._log.error("Connection attempt aborded by the server.")
+            self._client_is_connected = False
+        except Exception as e:
+            self._log.error(e)
+            self._client_is_connected = False
+        else:
+            self._log.info(f"Client successfully connected to server hosted at {addr}.")
+            self._client_is_connected = True
+        finally:
+            return self._client_is_connected
+    
+    def client_disconnect(self):
+        """
+        Shuts down and closes the connection to the server.
+        
+        Can be called safely even if the socket is already disconnected.
+        """
+        try:
+            self._client_socket.shutdown(socket.SHUT_RDWR)
+            self._client_socket.close()
+        except OSError:
+            pass # Already disconnected: nothing else to do anymore
+        self._client_is_connected = False
+        self._log.info("Client successfully disconnected from the server.")
+    
+    def client_send(self, msg_opcode:opcode, message:dict|str|int|float|None) -> int:
+        """
+        Sends a message to the connected server.
+        
+        The message must be identified by an opcode, and should be [json](https://docs.python.org/3/library/json.html) serializable.
+        The format of `message` shall meets the following requirements, depending on the value of `opcode`:
+        
+        |  opcode    |    message format        |
+        | ---------- | ------------------------ |
+        | KEEPALIVE  | None                     |
+        | GAMEFULL   | {"uuid":str, "name":str} |
+        | GAMEJOIN   | {"game_uuid":str, "player_color":bool, "player_name":str, "player_uuid":str}  |
+        | GAMEDELETE | str (UUID of the game to delete)  |
+        | GAMEABORD  | {"player_uuid": str}              |
+        | MOVE       | {"player_uuid": str, "move":str}  |
+        | CLAIM      | {"player_uuid": str, "claim":int} |
+        
+        The value returned by this method is an error code (except `0`), identifying the cause of an unsuccessful attempt of sending a message. The possible values are:
+        
+        | code  |  meaning                             |
+        | ----- | ------------------------------------ |
+        | 0     | No error - Message successfully sent |
+        | 1     | Unknown opcode                       |
+        | 2     | Bad format for the message           |
+        | 3     | `message` is not serializable        |
+        | 4     | The link to the server is temporarily unavailable. Please try again later |
+        | 5     | The link to the server is not connected (`client_is_connected` is`False`) |
+        | 6     | Broken Pipe Error - The socket has been shutdown for writing by the server |
+        | 7     | Connection reset by the server, due to a crash or an unclean shutdown |
+        | 8     | Operation timed out                   |
+        | 9     | Other network error                   |
+        
+        From the value `6` onwards, `client_disconnect()` is internally executed before handing over. Subsequent calls to the method will return error `5` systematically if no action is taken in the meantime to resolve the problem.
+        It is safe to retry the method several times after an error `4`, but the systematic return of this value is symptomatic of a data flow bottleneck, and should be managed by the calling function by setting up waiting times between each data transmission, for example.
+        The error `8` is only relevant if the socket was not initialized in blocking mode.
+        Please note that only issues regarding the connection between the current client and the server are detected; the message can be successfully sent even if there is a connection failure between the server and the opponent client.
+        
+        Parameters:
+            msg_opcode:
+                opcode identifying the nature of the message to send
+            message:
+                message to send
+        
+        Returns:
+            Error code or `0` if the message is successfully sent.
+        """
+        if msg_opcode not in [opcode.KEEPALIVE, opcode.GAMEFULL, opcode.GAMEJOIN, opcode.GAMEDELETE, opcode.GAMEABORD, opcode.MOVE, opcode.CLAIM]:
+            self._log.error(f"{msg_opcode} is not a compatible opcode")
+            return 1
+        elif (msg_opcode == opcode.KEEPALIVE) and (message is not None):
+            self._log.error(f"{message} is not a message compatible with the opcode KEEPALIVE")
+            return 2
+        elif (msg_opcode == opcode.GAMEFULL) and ((not isinstance(message,dict)) or ("uuid" not in message) or ("name" not in message)):
+            self._log.error(f"{message} is not a message compatible with the opcode GAMEFULL")
+            return 2
+        elif (msg_opcode == opcode.GAMEJOIN) and ((not isinstance(message,dict)) or ("game_uuid" not in message) or ("player_color" not in message) or ("player_name" not in message) or ("player_uuid" not in message)):
+            self._log.error(f"{message} is not a message compatible with the opcode GAMEJOIN")
+            return 2
+        elif (msg_opcode == opcode.GAMEDELETE) and (not isinstance(message,str)):
+            self._log.error(f"{message} is not a message compatible with the opcode GAMEDELETE")
+            return 2
+        elif (msg_opcode == opcode.GAMEABORD) and ((not isinstance(message,dict)) or ("player_uuid" not in message)):
+            self._log.error(f"{message} is not a message compatible with the opcode GAMEABORD")
+            return 2
+        elif (msg_opcode == opcode.MOVE) and ((not isinstance(message,dict)) or ("player_uuid" not in message) or ("move" not in message)):
+            self._log.error(f"{message} is not a message compatible with the opcode MOVE")
+            return 2
+        elif (msg_opcode == opcode.CLAIM) and ((not isinstance(message,dict)) or ("player_uuid" not in message) or ("claim" not in message)):
+            self._log.error(f"{message} is not a message compatible with the opcode CLAIM")
+            return 2
+        else:
+            try:
+                json_msg = json.dumps(message)
+            except TypeError:
+                self._log.error(f"{message} is not serializable")
+                return 3
+            if not self._client_is_connected:
+                self._log.error("The server is not connected")
+                return 5
+            else:
+                try:
+                    self._client_socket.sendall(bytes([msg_opcode]) + bytes(json_msg, "utf-8"))
+                except BlockingIOError:
+                    self._log.error("The link to the server is temporarily unavailable. Please try again later")
+                    return 4
+                except BrokenPipeError:
+                    self._log.error("Broken Pipe Error - The socket has been shutdown for writing by the server")
+                    self.client_disconnect()
+                    return 6
+                except ConnectionResetError:
+                    self._log.error("Connection reset by the server, due to a crash or an unclean shutdown")
+                    self.client_disconnect()
+                    return 7
+                except TimeoutError:
+                    self._log.error("Operation timed out")
+                    self.client_disconnect()
+                    return 8
+                except OSError as err:
+                    self._log.error(f"Network error: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                    self.client_disconnect()
+                    return 9
+                else:
+                    self._log.debug("Message successfully sent")
+                    return 0
+    
+    def client_create_new_game(self) -> int:
+        """
+        Creates a new game on the connected server.
+        
+        The characteristics of the game are those of the `client_game` attribute, which must therefore be correctly initialized before calling this method.
+        
+        Returns:
+            `0` if the game has been created successfully, `1` if the game has not been created because the UUID already exists on the server, and `-1` for no game creation due to other reasons.
+        """
+        if self._client_game is None:
+            self._log.error("The `client_game` is not correctly initialized.")
+            return -1
+        else:
+            msg_opcode = opcode.GAMEFULL
+            message = {"uuid":self._client_game.uuid, "name":self._client_game.name}
+            repeat_max = 3
+            repeat = 0
+            while repeat < repeat_max:
+                return_code = self.client_send(msg_opcode,message)
+                if return_code == 4:
+                    time.sleep(0.1)
+                    repeat += 1
+                elif return_code not in [0,4]:
+                    self._log.error(f"The game {self._client_game.name} is not created due to a connection issue with the server.")
+                    return -1
+                else:
+                    break
+            if return_code == 4:
+                self._log.error(f"The game {self._client_game.name} is not created due to a data flow bottleneck when communicating with the server.")
+                return -1
+            else:
+                try:
+                    data = self._client_socket.recv(1024).strip()
+                except OSError as err:
+                    self._log.error(f"Network error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                    self.client_disconnect()
+                    return -1
+                except:
+                    self._log.error(f"Unknown error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                    return -1
+                else:
+                    recv_opcode = data[0]
+                    if recv_opcode == opcode.SUCCESSFUL:
+                        self._log.debug(f"The game {self._client_game.name} is successfully created")
+                        return 0
+                    elif recv_opcode == opcode.UNSUCCESSFUL:
+                        self._log.debug(f"The game {self._client_game.name} is not created because the UUID is already recorded on the server")
+                        return 1
+                    else:
+                        self._log.error("Receipt of an unexpected opcode")
+                        return -1
+    
+    def client_delete_game(self, game_uuid:str) -> int:
+        """
+        Deletes game on the connected server.
+        
+        The characteristics of the player are those of the `client_game` attribute, which must therefore be correctly initialized before calling this method.
+        
+        Parameters:
+            game_uuid:
+                UUID of the game
+        
+        Returns:
+            `0` if the game has been deleted successfully, `1` if the game does not exist on the server, and `-1` for no game deletion due to other reasons.
+        """
+        if not isinstance(game_uuid, str):
+            self._log.error("The game is not deleted because the game UUID is not a string.")
+            return -1
+        else:
+            msg_opcode = opcode.GAMEDELETE
+            message = game_uuid
+            repeat_max = 3
+            repeat = 0
+            while repeat < repeat_max:
+                return_code = self.client_send(msg_opcode,message)
+                if return_code == 4:
+                    time.sleep(0.1)
+                    repeat += 1
+                elif return_code not in [0,4]:
+                    self._log.error(f"The game {game_uuid} is not deleted due to a connection issue with the server.")
+                    return -1
+                else:
+                    break
+            if return_code == 4:
+                self._log.error(f"The game {game_uuid} is not deleted due to a data flow bottleneck when communicating with the server.")
+                return -1
+            else:
+                try:
+                    data = self._client_socket.recv(1024).strip()
+                except OSError as err:
+                    self._log.error(f"Network error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                    self.client_disconnect()
+                    return -1
+                except:
+                    self._log.error(f"Unknown error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                    return -1
+                else:
+                    recv_opcode = data[0]
+                    if recv_opcode == opcode.SUCCESSFUL:
+                        self._log.debug(f"The game {game_uuid} is successfully deleted")
+                        return 0
+                    elif recv_opcode == opcode.UNSUCCESSFUL:
+                        self._log.debug(f"The game {game_uuid} does not exist and cannot be deleted on the server")
+                        return 1
+                    else:
+                        self._log.error("Receipt of an unexpected opcode")
+                        return -1
+    
+    def client_join_game(self, game_uuid:str) -> int:
+        """
+        Joins a game on the connected server.
+        
+        The characteristics of the player joining the game are deduced from the `client_game` attribute, which must therefore be correctly initialized before this method is called. This is the player who is not of type `Type.NETWORK`.
+        
+        Parameters:
+            game_uuid:
+                UUID of the game
+        
+        Returns:
+            `0` if the game has been joined successfully, `1` if the game does not exist on the server, and `-1` if the game has not been joined due to other reasons.
+        """
+        if self._client_game is None:
+            self._log.error("The `client_game` attribute is not correctly initialized.")
+            return -1
+        elif not isinstance(game_uuid, str):
+            self._log.error("Unable to join the game because the game UUID not a string.")
+            return -1
+        else:
+            compliant_players = [player for player in self._client_game.players if player.type in [Type.HUMAN, Type.CPU]]
+            if len(compliant_players) == 2:
+                self._log.error("No network opponent in the current game")
+                return -1
+            elif len(compliant_players) == 0:
+                self._log.error("No available player detected")
+                return -1
+            else:
+                player = compliant_players[0]
+                msg_opcode = opcode.GAMEJOIN
+                message = {"game_uuid":game_uuid, "player_color":player.color, "player_name":player.name, "player_uuid":player.uuid}
+                repeat_max = 3
+                repeat = 0
+                while repeat < repeat_max:
+                    return_code = self.client_send(msg_opcode,message)
+                    if return_code == 4:
+                        time.sleep(0.1)
+                        repeat += 1
+                    elif return_code not in [0,4]:
+                        self._log.error(f"The game {game_uuid} is not joined due to a connection issue with the server.")
+                        return -1
+                    else:
+                        break
+                if return_code == 4:
+                    self._log.error(f"The game {game_uuid} is not joined due to a data flow bottleneck when communicating with the server.")
+                    return -1
+                else:
+                    try:
+                        data = self._client_socket.recv(1024).strip()
+                    except OSError as err:
+                        self._log.error(f"Network error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                        self.client_disconnect()
+                        return -1
+                    except:
+                        self._log.error(f"Unknown error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                        return -1
+                    else:
+                        recv_opcode = data[0]
+                        if recv_opcode == opcode.SUCCESSFUL:
+                            self._log.debug(f"The game {game_uuid} is successfully joined")
+                            self._client_game.uuid = game_uuid
+                            return 0
+                        elif recv_opcode == opcode.UNSUCCESSFUL:
+                            self._log.debug(f"The game {game_uuid} does not exist and cannot be joined")
+                            return 1
+                        else:
+                            self._log.error("Receipt of an unexpected opcode")
+                            return -1
+    
+    def client_move(self, move:chess.Move, wait_for_reply:bool = True) -> dict:
+        """
+        Informs the opponent of the half-move made by the current, local player, and optionnaly waits for its reply (ie: the following half_move or a claim).
+        
+        The UUID of the player is deduced from the `client_game` attribute, which must therefore be correctly initialized before this method is called. This is the player who is not of type `Type.NETWORK`.
+        
+        Parameters:
+            move:
+                Half-move of the current, local player
+            wait_for_reply:
+                If `True` (the default), the methods waits for an error or a reply from the opponent. 3 kinds of reply are expected: another half-move, a claim for a draw, or a withdrawal. If `False`, the method returns immediately after the aknowledge of a succesful sending (or after an error).
+        
+        returns:
+            If `wait_for_reply` is `True` (the default): a dictionnary meeting the following format: {"err_code":`err_code`, "reply_type":`reply_type`,"data":`data`}.
+            The possible values are:
+            
+            |   Variable   |                    Possible values                         |
+            | ------------ | ---------------------------------------------------------- |
+            | `err_code`   | `0` if the half-move has been sent successfully            |
+            |              | `1` if the opponent is unreachable                         |
+            |              | `-1` if the half-move has not been sent for another reason |
+            | `reply_type` | None if an error has occured (`err_code` = 1 or -1)        |
+            |              | `0` if the reply is the next half-move of the opponent     |
+            |              | `1` if the reply is a claim                                |
+            |              | `2` if the reply is the withdrawal of the opponent         |
+            | `data`       | a `chess.Move` object if `reply_type` = 0                  |
+            |              | `Draw.THREEFOLD` or `Draw.FIFTY` if `reply_type` = 1       |
+            |              | None if `reply_type` = 2 or `reply_type` is None           |
+                        
+            If `wait_for_reply` is `False`: a dictionnary meeting the following format: {"err_code":`err_code`}.
+            The possible values are:
+            
+            |   Variable   |                    Possible values                         |
+            | ------------ | ---------------------------------------------------------- |
+            | `err_code`   | `0` if the half-move has been sent successfully            |
+            |              | `1` if the opponent is unreachable                         |
+            |              | `-1` if the half-move has not been sent for another reason |
+            
+        """
+        if self._client_game is None:
+            self._log.error("The `client_game` attribute is not correctly initialized.")
+            return {"err_code":-1,"reply_type":None,"data":None} if wait_for_reply else {"err_code":-1}
+        elif not isinstance(move, chess.Move):
+            self._log.error("The move has not the right type.")
+            return {"err_code":-1,"reply_type":None,"data":None} if wait_for_reply else {"err_code":-1}
+        else:
+            compliant_players = [player for player in self._client_game.players if player.type in [Type.HUMAN, Type.CPU]]
+            if len(compliant_players) == 2:
+                self._log.error("No network opponent in the current game")
+                return {"err_code":-1,"reply_type":None,"data":None} if wait_for_reply else {"err_code":-1}
+            elif len(compliant_players) == 0:
+                self._log.error("No available player detected")
+                return {"err_code":-1,"reply_type":None,"data":None} if wait_for_reply else {"err_code":-1}
+            else:
+                player = compliant_players[0]
+                msg_opcode = opcode.MOVE
+                message = {"player_uuid":player.uuid, "move":move.uci()}
+                repeat_max = 3
+                repeat = 0
+                while repeat < repeat_max:
+                    return_code = self.client_send(msg_opcode,message)
+                    if return_code == 4:
+                        time.sleep(0.1)
+                        repeat += 1
+                    elif return_code not in [0,4]:
+                        self._log.error(f"Connection issue with the server.")
+                        return {"err_code":-1,"reply_type":None,"data":None} if wait_for_reply else {"err_code":-1}
+                    else:
+                        break
+                if return_code == 4:
+                    self._log.error(f"Data flow bottleneck when communicating with the server.")
+                    return {"err_code":-1,"reply_type":None,"data":None} if wait_for_reply else {"err_code":-1}
+                else:
+                    try:
+                        data = self._client_socket.recv(1024).strip()
+                    except OSError as err:
+                        self._log.error(f"Network error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                        self.client_disconnect()
+                        return {"err_code":-1,"reply_type":None,"data":None} if wait_for_reply else {"err_code":-1}
+                    except:
+                        self._log.error(f"Unknown error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                        return {"err_code":-1,"reply_type":None,"data":None} if wait_for_reply else {"err_code":-1}
+                    else:
+                        recv_opcode = data[0]
+                        if recv_opcode == opcode.SUCCESSFUL:
+                            self._log.debug(f"The move {move.uci()} has been successfully sent")
+                            if not wait_for_reply:
+                                return {"err_code":0}
+                        elif (recv_opcode == opcode.UNSUCCESSFUL) or (recv_opcode == opcode.UNREACHABLE):
+                            self._log.debug(f"The move {move.uci()} has not been sent correctly")
+                            return {"err_code":1,"reply_type":None,"data":None} if wait_for_reply else {"err_code":-1}
+                        else:
+                            self._log.error("Receipt of an unexpected opcode")
+                            return {"err_code":-1,"reply_type":None,"data":None} if wait_for_reply else {"err_code":-1}
+                        
+                        if wait_for_reply:
+                            try:
+                                data = self._client_socket.recv(1024).strip()
+                            except OSError as err:
+                                self._log.error(f"Network error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                                self.client_disconnect()
+                                return {"err_code":-1,"reply_type":None,"data":None} if wait_for_reply else {"err_code":-1}
+                            except:
+                                self._log.error(f"Unknown error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                                return {"err_code":-1,"reply_type":None,"data":None} if wait_for_reply else {"err_code":-1}
+                            else:
+                                recv_opcode = data[0]
+                                if recv_opcode == opcode.MOVE:
+                                    msg = json.loads(str(data[1:], "utf-8"))
+                                    self._log.debug(f"Receipt of the move {msg['move']}")
+                                    return {"err_code":0,"reply_type":0,"data":chess.Move.from_uci(msg["move"])}
+                                elif recv_opcode == opcode.CLAIM:
+                                    msg = json.loads(str(data[1:], "utf-8"))
+                                    self._log.debug(f"Receipt of a claim for a draw due to the following reason: {'Fifty-move rule' if msg['claim'] == Draw.FIFTY else 'Threefold repetition'}")
+                                    return {"err_code":0,"reply_type":1,"data":msg["claim"]}
+                                elif recv_opcode == opcode.WITHDRAWAL:
+                                    msg = json.loads(str(data[1:], "utf-8"))
+                                    self._log.debug(f"Receipt of a withdrawal")
+                                    return {"err_code":0,"reply_type":2,"data":None}
+    
+    def client_claim(self, claim:int) -> int:
+        """
+        Claims for a draw.
+        
+        The UUID of the player is deduced from the `client_game` attribute, which must therefore be correctly initialized before this method is called. This is the player who is not of type `Type.NETWORK`.
+        
+        Parameters:
+            claim:
+                `Draw.FIFTY` for a claim according to the fifty-move rule, or `Draw.THREEFOLD` for a claim follwing a threefold repetition.
+        
+        Returns:
+            `0` if the claim has been sent successfully, `1` if the player is not registred on the server, and `-1` if the claim has not been sent due to other reasons.
+        """
+        compliant_players = [player for player in self._client_game.players if player.type in [Type.HUMAN, Type.CPU]]
+        if len(compliant_players) == 2:
+            self._log.error("No network opponent in the current game")
+            return -1
+        elif len(compliant_players) == 0:
+            self._log.error("No available player detected")
+            return -1
+        else:
+            player = compliant_players[0]
+            msg_opcode = opcode.CLAIM
+            message = {"player_uuid":player.uuid}
+            repeat_max = 3
+            repeat = 0
+            while repeat < repeat_max:
+                return_code = self.client_send(msg_opcode,message)
+                if return_code == 4:
+                    time.sleep(0.1)
+                    repeat += 1
+                elif return_code not in [0,4]:
+                    self._log.error(f"Connection issue with the server.")
+                    return -1
+                else:
+                    break
+            if return_code == 4:
+                self._log.error(f"Data flow bottleneck when communicating with the server.")
+                return -1
+            else:
+                try:
+                    data = self._client_socket.recv(1024).strip()
+                except OSError as err:
+                    self._log.error(f"Network error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                    self.client_disconnect()
+                    return -1
+                except:
+                    self._log.error(f"Unknown error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                    return -1
+                else:
+                    recv_opcode = data[0]
+                    if recv_opcode == opcode.SUCCESSFUL:
+                        self._log.debug(f"The CLAIM message was successfully received by the opponent.")
+                        return 0
+                    elif recv_opcode == opcode.UNSUCCESSFUL:
+                        self._log.warning("The current player is not registred on the server: no claim to send")
+                        return 1
+                    elif recv_opcode == opcode.UNREACHABLE:
+                        self._log.warning("The CLAIM message was sent to the server, but was not received by the opponent.")
+                        return -1
+                    else:
+                        self._log.error("Receipt of an unexpected opcode")
+                        return -1
+    
+    def client_abord(self) -> int:
+        """
+        Abords the current game.
+        
+        The UUID of the player is deduced from the `client_game` attribute, which must therefore be correctly initialized before this method is called. This is the player who is not of type `Type.NETWORK`.
+        
+        Returns:
+            `0` if the game has been aborded successfully, `1` if the player is not registred on the server, and `-1` if the game has not been aborded due to other reasons.
+        """
+        compliant_players = [player for player in self._client_game.players if player.type in [Type.HUMAN, Type.CPU]]
+        if len(compliant_players) == 2:
+            self._log.error("No network opponent in the current game")
+            return -1
+        elif len(compliant_players) == 0:
+            self._log.error("No available player detected")
+            return -1
+        else:
+            player = compliant_players[0]
+            msg_opcode = opcode.WITHDRAWAL
+            message = {"player_uuid":player.uuid}
+            repeat_max = 3
+            repeat = 0
+            while repeat < repeat_max:
+                return_code = self.client_send(msg_opcode,message)
+                if return_code == 4:
+                    time.sleep(0.1)
+                    repeat += 1
+                elif return_code not in [0,4]:
+                    self._log.error(f"Connection issue with the server.")
+                    return -1
+                else:
+                    break
+            if return_code == 4:
+                self._log.error(f"Data flow bottleneck when communicating with the server.")
+                return -1
+            else:
+                try:
+                    data = self._client_socket.recv(1024).strip()
+                except OSError as err:
+                    self._log.error(f"Network error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                    self.client_disconnect()
+                    return -1
+                except:
+                    self._log.error(f"Unknown error during reply receipt: {errno.errorcode[err.errno]} ({os.strerror(err.errno)})")
+                    return -1
+                else:
+                    recv_opcode = data[0]
+                    if recv_opcode == opcode.SUCCESSFUL:
+                        self._log.debug(f"The WITHDRAWAL message was successfully received by the opponent.")
+                        return 0
+                    elif recv_opcode == opcode.UNSUCCESSFUL:
+                        self._log.warning("The current player is not registred on the server: no game to abord")
+                        return 1
+                    elif recv_opcode == opcode.UNREACHABLE:
+                        self._log.warning("The WITHDRAWAL message was sent to the server, but was not received by the opponent.")
+                        return -1
+                    else:
+                        self._log.error("Receipt of an unexpected opcode")
+                        return -1
+    
+    def _client_repeated_keepalive(self):
+        """
+        Sends out regular KEEPALIVE signals to the server.
+        
+        Calculates the frequency from the connection timeout, so that KEEPALIVE is transmitted before the timeout expires. This methods returns when the connection is closed.
+        """
+        period = self._client_socket.gettimeout()*0.75
+        msg_opcode = opcode.KEEPALIVE
+        message = None
+        while self._client_is_connected:
+            time.sleep(period)
+            return_code = self.client_send(msg_opcode,message)
+    
+    def client_start_keepalive(self):
+        """
+        Starts sending repeated KEEPALIVE signals in another thread, and returns immediately.
+        """
+        threading.Thread(target=self._client_repeated_keepalive, daemon=True).start()
 
 # Functions
 # ----------

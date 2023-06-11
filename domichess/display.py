@@ -1247,7 +1247,7 @@ class Display:
         options: domichess.engigne,Options object, mandatory
                 Options to apply
         engine: domichess.engine.Engine object, mandatory
-                the engine on what the options are applied
+                the engine on which the options are applied
 
         Returns
         -------
