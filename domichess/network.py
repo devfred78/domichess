@@ -19,7 +19,18 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 """
-	Module network: network management
+Module network: network management
+
+This module provides materials for managing network games with remote opponents.
+
+2 kinds of network games are available: LAN (Local Area Network) games and games on Internet. Both use a client/server infrastructure, but with some differences in their respective implementations.
+
+For LAN games, the first step consists in instanciating a `LANFinderServer` object, and starting the server (method `start()`) in order to catch other available players on the LAN.
+The user should indicate the suitable values for the parameters `local_player_uuid`, `local_player_name`, `local_player_color`, `local_game_uuid` and `local_game_name`, and then broadcasts those data on the LAN (method `broadcast()`) to inform other LAN players about the local characteristics.
+After that, all further modifications on those parameters are automatically broadcasted to other LAN players.
+All received characteristics of other players are stored in the `rem_players` parameter.
+To invit another player to play a game, the user should call the method `invit()` with UUID of the invited player. If the player is compliant (available and with opposite color of the local player), his own `LANFinderServer` instance should automatically populate its `invited_by` parameter with the UUID of the inviting player.
+In this case, the remote player can either accept (method `accept()`) or decline (method `decline()`) the invitation. If accepted, the inviting player runs a server on its computer to register his network game.
 """
 
 
@@ -55,6 +66,7 @@ from domichess.game import Player, Game
 # Enumerations
 # -------------
 class opcode(IntEnum):  # operations for network transactions
+    LANPLAYER = auto() # New player available on the LAN, or update of an existing player
     IAMHERE = auto()  # Declaration of a new player
     KEEPALIVE = auto()  # The player is still available
     PLAYERNAME = auto()  # The name of the player
@@ -104,7 +116,33 @@ class FinderHandler(DatagramRequestHandler):
         if self.client_address[0] != self.server.local_address:
             data = self.request[0]
             recv_opcode = data[0]
-            if recv_opcode == opcode.IAMHERE:
+            if recv_opcode == opcode.LANPLAYER:
+                self.server.log.debug(f"Receipt of characteristics from {self.client_address[0]}")
+                msg = json.loads(str(data[1:], "utf-8"))
+                if self.client_address[0] not in self.server.rem_players:
+                    self.server.log.debug("A new LAN player is available !")
+                    with self.server.rem_play_lock:
+                        self.server.rem_players[self.client_address[0]] = msg
+                    self.server.log.debug("Reply to the new LAN player to give him our characteristics")
+                    self.server.send_charac_to(addr = (self.client_address[0], self.server.port))
+                else:
+                    self.server.log.debug("Characteristics update for an already known LAN player")
+                    if opcode.PLAYERUUID in msg:
+                        with self.server.rem_play_lock:
+                            self.server.rem_players[self.client_address[0]][opcode.PLAYERUUID] = msg[opcode.PLAYERUUID]
+                    if opcode.PLAYERNAME in msg:
+                        with self.server.rem_play_lock:
+                            self.server.rem_players[self.client_address[0]][opcode.PLAYERNAME] = msg[opcode.PLAYERNAME]
+                    if opcode.PLAYERCOLOR in msg:
+                        with self.server.rem_play_lock:
+                            self.server.rem_players[self.client_address[0]][opcode.PLAYERCOLOR] = msg[opcode.PLAYERCOLOR]
+                    if opcode.GAMEUUID in msg:
+                        with self.server.rem_play_lock:
+                            self.server.rem_players[self.client_address[0]][opcode.GAMEUUID] = msg[opcode.GAMEUUID]
+                    if opcode.GAMENAME in msg:
+                        with self.server.rem_play_lock:
+                            self.server.rem_players[self.client_address[0]][opcode.GAMENAME] = msg[opcode.GAMENAME]
+            elif recv_opcode == opcode.IAMHERE:
                 self.server.log.debug(
                     f"Receipt of a declaration of a new player from {self.client_address[0]}"
                 )
@@ -310,6 +348,18 @@ class LANFinderServer(ThreadingUDPServer):
                     The port number on which the server is listening to. **read-only**
             broad_addr:
                     List of string representations of the broadcast addresses, using the IPv4 form (like `100.50.200.5`). **read-only** (but mutable)
+            local_player_uuid:
+                    UUID of the local player
+            local_player_name:
+                    Name of the local player
+            local_player_color:
+                    Color of the local player
+            local_game_uuid:
+                    UUID of the local game
+            local_game_name:
+                    Name of the local game
+            rem_players:
+                    List of available players on the LAN. Each value is a dictionnary {"address":IPv4_address_of_the_player, "player_uuid": uuid_of_the_player, "player_name": name_of_the_player, "player_color": color_of_the_player, "game_uuid": uuid_of_the_game, "game_name": name_of_the_game}
             play_addr:
                     list of the IPv4 addresses of the available remote players on the LAN. **read-only** (but mutable)
             remote_games:
@@ -352,6 +402,17 @@ class LANFinderServer(ThreadingUDPServer):
 
         self._port = port
 
+        # local characteristics
+        self._local_player_uuid = None
+        self._local_player_name = None
+        self._local_player_color = None
+        self._local_game_uuid = None
+        self._local_game_name = None
+        
+        # Characteristics of all LAN remote players
+        self._rem_players = dict()
+        self.rem_play_lock = threading.Lock()
+        
         # Find the IPv4 address of the local host
         host = socket.gethostname()
         self._local_address = socket.gethostbyname(host)
@@ -380,6 +441,71 @@ class LANFinderServer(ThreadingUDPServer):
         self._remote_games = dict()
         self.games_lock = threading.Lock()
 
+    @property
+    def local_player_uuid(self) -> str:
+        # UUID of the local player
+        return self._local_player_uuid
+    
+    @local_player_uuid.setter
+    def local_player_uuid(self, value):
+        if isinstance(value, str):
+            self._local_player_uuid = value
+            if self._started:
+                self.broadcast(charac = 0b00000001)
+    
+    @property
+    def local_player_name(self) -> str:
+        # Name of the local player
+        return self._local_player_name
+    
+    @local_player_name.setter
+    def local_player_name(self, value):
+        if isinstance(value, str):
+            self._local_player_name = value
+            if self._started:
+                self.broadcast(charac = 0b00000010)
+    
+    @property
+    def local_player_color(self) -> bool:
+        # Color of the local player
+        return self._local_player_color
+    
+    @local_player_color.setter
+    def local_player_name(self, value):
+        if isinstance(value, bool):
+            self._local_player_color = value
+            if self._started:
+                self.broadcast(charac = 0b00000100)
+    
+    @property
+    def local_game_uuid(self) -> str:
+        # UUID of the local game
+        return self._local_game_uuid
+    
+    @local_game_uuid.setter
+    def local_game_uuid(self, value):
+        if isinstance(value, str):
+            self._local_game_uuid = value
+            if self._started:
+                self.broadcast(charac = 0b00001000)
+    
+    @property
+    def local_game_name(self) -> str:
+        # Name of the local game
+        return self._local_game_name
+    
+    @local_game_name.setter
+    def local_game_name(self, value):
+        if isinstance(value, str):
+            self._local_game_name = value
+            if self._started:
+                self.broadcast(charac = 0b00010000)
+    
+    @property
+    def rem_players(self) -> dict:
+        # Dictionnary of characteristics of LAN remote players, keyed by IP addresses
+        return self._rem_players
+    
     @property
     def started(self) -> bool:
         # `True` if the server is running. `False` otherwise.
@@ -425,6 +551,115 @@ class LANFinderServer(ThreadingUDPServer):
         # Logger used to track events that append when the instance is running. Child of the `logger` provided, or a fake logger with a null handler.
         return self._log
 
+    def broadcast(self, charac=0b00011111: int) -> int:
+        """
+        Broadcasts one or more local characteristics on the LAN, to inform remote players for a change.
+        
+        Parameters:
+            charac:
+                Indicates which characteristics is broadcasted, according to the following table. Simply adds the values to broadcast several characteristics (for example, 0b00000011 to broadcast player UUID **and** player name).
+                
+                | Value       |  Characteristic  |
+                | ----------- | ---------------- |
+                | 0b00000001  | Player UUID      |
+                | 0b00000010  | Player name      |
+                | 0b00000100  | Player color     |
+                | 0b00001000  | Game UUID        |
+                | 0b00010000  | Game name        |
+        
+        Returns:
+            One of the following values:
+            
+            | Return value | Reason                                   |
+            | ------------ | ---------------------------------------- |
+            | 0            | Characteristics successfully broadcasted |
+            | 1            | No characteristic to broadcast           |
+            | 2            | No granted access to broadcast           |
+             
+        """
+        msg = dict()
+        if charac & 0b00000001:
+            msg[opcode.PLAYERUUID] = self._local_player_uuid
+        if charac & 0b00000010:
+            msg[opcode.PLAYERNAME] = self._local_player_name
+        if charac & 0b00000100:
+            msg[opcode.PLAYERCOLOR] = self._local_player_color
+        if charac & 0b00001000:
+            msg[opcode.GAMEUUID] = self._local_game_uuid
+        if charac & 0b00010000:
+            msg[opcode.GAMENAME] = self._local_game_name
+        
+        if len(msg) != 0:
+            serialized_msg = json.dumps(msg)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._log.debug("Broadcasts a local characteristic")
+            try:
+                for broad in self.broad_addr:
+                    sock.sendto(bytes([opcode.LANPLAYER])+ bytes(serialized_msg, "utf-8"), (broad, self.port))
+                self._log.debug("Broadcast successful")
+                return 0
+            except PermissionError:
+                self._log.exception(f"{broad} broadcast address is not permitted on this interface by the OS. Please grant access and try again.")
+                return 2
+        else:
+            self._log.debug("No characteristic to broadcast")
+            return 1
+    
+    def send_charac_to(self, addr:tuple, charac=0b00011111: int) -> int:
+        """
+        Sends one or more local characteristics to a specfic IPv4 address, to inform remote player for a change.
+        
+        Parameters:
+            addr:
+                Tuple with 2 elements: a string for the IPv4 address representation of the receiver, and an integer for the port the receiver is listening to (eg: ("192.168.4.7", 5000) ).
+            charac:
+                Indicates which characteristics is sent, according to the following table. Simply adds the values to send several characteristics (for example, 0b00000011 to send player UUID **and** player name).
+                
+                | Value       |  Characteristic  |
+                | ----------- | ---------------- |
+                | 0b00000001  | Player UUID      |
+                | 0b00000010  | Player name      |
+                | 0b00000100  | Player color     |
+                | 0b00001000  | Game UUID        |
+                | 0b00010000  | Game name        |
+        
+        Returns:
+            One of the following values:
+            
+            | Return value | Reason                            |
+            | ------------ | --------------------------------- |
+            | 0            | Characteristics successfully send |
+            | 1            | No characteristic to send         |
+            | 2            | Network error                     |
+             
+        """
+        msg = dict()
+        if charac & 0b00000001:
+            msg[opcode.PLAYERUUID] = self._local_player_uuid
+        if charac & 0b00000010:
+            msg[opcode.PLAYERNAME] = self._local_player_name
+        if charac & 0b00000100:
+            msg[opcode.PLAYERCOLOR] = self._local_player_color
+        if charac & 0b00001000:
+            msg[opcode.GAMEUUID] = self._local_game_uuid
+        if charac & 0b00010000:
+            msg[opcode.GAMENAME] = self._local_game_name
+        
+        if len(msg) != 0:
+            serialized_msg = json.dumps(msg)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._log.debug("Sends a local characteristic")
+            try:
+                sock.sendto(bytes([opcode.LANPLAYER])+ bytes(serialized_msg, "utf-8"), addr)
+                self._log.debug("Sent successful")
+                return 0
+            except OSError:
+                self._log.exception("Network error. No characteristic sent")
+                return 2
+        else:
+            self._log.debug("No characteristic to send")
+            return 1
+    
     def start(self, blocking: bool = False):
         """
         Starts the server and seeks other players on the LAN.
