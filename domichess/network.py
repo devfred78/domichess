@@ -26,11 +26,17 @@ This module provides materials for managing network games with remote opponents.
 2 kinds of network games are available: LAN (Local Area Network) games and games on Internet. Both use a client/server infrastructure, but with some differences in their respective implementations.
 
 For LAN games, the first step consists in instanciating a `LANFinderServer` object, and starting the server (method `start()`) in order to catch other available players on the LAN.
-The user should indicate the suitable values for the parameters `local_player_uuid`, `local_player_name`, `local_player_color`, `local_game_uuid` and `local_game_name`, and then broadcasts those data on the LAN (method `broadcast()`) to inform other LAN players about the local characteristics.
-After that, all further modifications on those parameters are automatically broadcasted to other LAN players.
-All received characteristics of other players are stored in the `rem_players` parameter.
-To invit another player to play a game, the user should call the method `invit()` with UUID of the invited player. If the player is compliant (available and with opposite color of the local player), his own `LANFinderServer` instance should automatically populate its `invited_by` parameter with the UUID of the inviting player.
-In this case, the remote player can either accept (method `accept()`) or decline (method `decline()`) the invitation. If accepted, the inviting player runs a server on its computer to register his network game.
+
+To be correctly instanciated, it is necessary to provide a threading.Event object, that will be activated when the game is about to start. When the Event is set, the caller should either instanciate a `PlayingServer` object, or connect to a remote player who instanciate such an object.
+
+The caller of the `LANFinderServer` instance should indicate the suitable values for the parameters `local_player_uuid`, `local_player_name`, `local_player_color`, `local_game_uuid` and `local_game_name`. All this information is automatically broadcast over the LAN (the same applies to any future partial or total modification of this information).
+
+All information received from remote players is stored in the `rem_players` parameter.
+
+Optionnaly, it is possible to enable a "keepalive" feature, to monitor whether remote players are still available. To do this, you first need to specify the period for which KEEPALIVE messages are sent (`keepalive_period` attribute), as well as the response timeout (`ack_timeout` attribute). Activation is then performed by setting the `keep_flag` attribute to `True`. This functionality can be stopped at any time by setting the `keep_flag` attribute to `False`. 
+
+To invit another player to play a game, the user should call the method `invit()` with UUID of the invited player. If the user changes his mind, he can cancel the invitation using the `cancel_invit()` method.
+The remote player can either accept (method `accept()`) or decline (method `decline()`) the invitation. If accepted, the aforementioned Event object is triggered, and the `LANFinderServer` instance is shut down.
 """
 
 
@@ -66,15 +72,16 @@ from domichess.game import Player, Game
 # Enumerations
 # -------------
 class opcode(IntEnum):  # operations for network transactions
+    
+    # opcodes for `LANFinderServer` objects
     LANPLAYER = auto() # New player available on the LAN, or update of an existing player
-    IAMHERE = auto()  # Declaration of a new player
-    KEEPALIVE = auto()  # The player is still available
-    PLAYERNAME = auto()  # The name of the player
-    PLAYERUUID = auto()  # UUID of the player
-    PLAYERCOLOR = auto()  # Color of the player
-    PLAYERFULL = auto()  # All characteristics of the player
-    GAMENAME = auto()  # The name of the game hosted by the server
-    GAMEUUID = auto()  # UUID of the game
+    KEEPALIVE = auto()  # Ask another player if he is still available
+    ACK = auto()  # Reply to a keepalive
+    ACCEPT = auto() # Accept the invitation
+    DECLINE = auto() # Decline the invitation
+    QUIT = auto()  # Quit the network
+    
+    # opcodes for `PlayingServer` objects
     GAMEFULL = auto()  # The name and the UUID of a game
     GAMEJOIN = auto()  # Join the remote game
     GAMELEAVE = auto()  # Leave the remote game
@@ -83,11 +90,21 @@ class opcode(IntEnum):  # operations for network transactions
     WITHDRAWAL = auto()  # Abord the current game
     MOVE = auto()   # A chess move
     CLAIM = auto()  # A claim for a draw
-    QUIT = auto()  # Quit the network
     UNREACHABLE = auto()  # The opponent is unreachable
     SUCCESSFUL = auto()  # Action successfully completed
     UNSUCCESSFUL = auto()  # Action not performed correctly
+    
+    # opcodes for both type's objects
+    GAMEISREADY = auto()  # The remote server is ready, the game is ready to start
+    
 
+class lan(IntEnum):
+    PLAYERNAME = auto()  # The name of the player
+    PLAYERUUID = auto()  # UUID of the player
+    PLAYERCOLOR = auto()  # Color of the player
+    GAMENAME = auto()  # The name of the game hosted by the server
+    GAMEUUID = auto()  # UUID of the game
+    INVITING = auto()  # Indicates wether the player is inviting or not
 
 # Global constants
 # -----------------
@@ -119,212 +136,71 @@ class FinderHandler(DatagramRequestHandler):
             if recv_opcode == opcode.LANPLAYER:
                 self.server.log.debug(f"Receipt of characteristics from {self.client_address[0]}")
                 msg = json.loads(str(data[1:], "utf-8"))
+                self.server.log.debug(f"msg = {msg}")
+                self.server.log.debug(f"rem_players = {self.server.rem_players}")
                 if self.client_address[0] not in self.server.rem_players:
-                    self.server.log.debug("A new LAN player is available !")
+                    self.server.log.debug(f"A new LAN player is available :/nPlayer name: {msg[lan.PLAYERNAME]}/nPlayer UUID: {msg[lan.PLAYERUUID]}/nPlayer color:{'WHITE' if msg[lan.PLAYERCOLOR] else 'BLACK'}/nRemote game name: {msg[lan.GAMENAME]}/n Remote game UUID: {msg[lan.GAMENAME]}/nInviting: {'YES' if msg[lan.INVITING] else 'NO'}")
                     with self.server.rem_play_lock:
                         self.server.rem_players[self.client_address[0]] = msg
                     self.server.log.debug("Reply to the new LAN player to give him our characteristics")
                     self.server.send_charac_to(addr = (self.client_address[0], self.server.port))
                 else:
                     self.server.log.debug("Characteristics update for an already known LAN player")
-                    if opcode.PLAYERUUID in msg:
+                    if lan.PLAYERUUID in msg:
+                        self.server.log.debug(f"Player UUID: {msg[lan.PLAYERUUID]}")
                         with self.server.rem_play_lock:
-                            self.server.rem_players[self.client_address[0]][opcode.PLAYERUUID] = msg[opcode.PLAYERUUID]
-                    if opcode.PLAYERNAME in msg:
+                            self.server.rem_players[self.client_address[0]][lan.PLAYERUUID] = msg[lan.PLAYERUUID]
+                    if lan.PLAYERNAME in msg:
+                        self.server.log.debug(f"Player name: {msg[lan.PLAYERNAME]}")
                         with self.server.rem_play_lock:
-                            self.server.rem_players[self.client_address[0]][opcode.PLAYERNAME] = msg[opcode.PLAYERNAME]
-                    if opcode.PLAYERCOLOR in msg:
+                            self.server.rem_players[self.client_address[0]][lan.PLAYERNAME] = msg[lan.PLAYERNAME]
+                    if lan.PLAYERCOLOR in msg:
+                        self.server.log.debug(f"Player color:{'WHITE' if msg[lan.PLAYERCOLOR] else 'BLACK'}")
                         with self.server.rem_play_lock:
-                            self.server.rem_players[self.client_address[0]][opcode.PLAYERCOLOR] = msg[opcode.PLAYERCOLOR]
-                    if opcode.GAMEUUID in msg:
+                            self.server.rem_players[self.client_address[0]][lan.PLAYERCOLOR] = msg[lan.PLAYERCOLOR]
+                    if lan.GAMEUUID in msg:
+                        self.server.log.debug(f"Remote game UUID: {msg[lan.GAMEUUID]}")
                         with self.server.rem_play_lock:
-                            self.server.rem_players[self.client_address[0]][opcode.GAMEUUID] = msg[opcode.GAMEUUID]
-                    if opcode.GAMENAME in msg:
+                            self.server.rem_players[self.client_address[0]][lan.GAMEUUID] = msg[opcode.GAMEUUID]
+                    if lan.GAMENAME in msg:
+                        self.server.log.debug(f"Remote game name: {msg[lan.GAMENAME]}")
                         with self.server.rem_play_lock:
-                            self.server.rem_players[self.client_address[0]][opcode.GAMENAME] = msg[opcode.GAMENAME]
-            elif recv_opcode == opcode.IAMHERE:
-                self.server.log.debug(
-                    f"Receipt of a declaration of a new player from {self.client_address[0]}"
-                )
-                if self.client_address[0] not in self.server.play_addr:
-                    self.server.log.info(
-                        f"{self.client_address[0]} added to the list of the remote players"
-                    )
-                    with self.server.addr_lock:
-                        self.server.play_addr.append(self.client_address[0])
-                    self.server.log.debug(
-                        f"Reply to {self.client_address[0]}: declared as a new player"
-                    )
-                    # Reply to the remote server and not the client since the latter has not been listening to anymore
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock.sendto(
-                        bytes([opcode.IAMHERE]),
-                        (self.client_address[0], self.server.port),
-                    )
-                else:
-                    self.server.log.debug(
-                        f"{self.client_address[0]} is already known as an available player"
-                    )
+                            self.server.rem_players[self.client_address[0]][lan.GAMENAME] = msg[lan.GAMENAME]
+                    if lan.INVITING in msg:
+                        self.server.log.debug(f"Inviting: {'YES' if msg[lan.INVITING] else 'NO'}")
+                        with self.server.rem_play_lock:
+                            self.server.rem_players[self.client_address[0]][lan.INVITING] = msg[lan.INVITING]
             elif recv_opcode == opcode.KEEPALIVE:
                 self.server.log.debug(
-                    f"Receipt of a keep alive from {self.client_address[0]}"
+                    f"{self.client_address[0]} asks if we are still available"
                 )
-                # In case of the first broadcast message was not received
-                if self.client_address[0] not in self.server.play_addr:
-                    self.server.log.info(
-                        f"{self.client_address[0]} added to the list of the remote players"
-                    )
-                    with self.server.addr_lock:
-                        self.server.play_addr.append(self.client_address[0])
-                self.server.log.debug(f"Reply to {self.client_address[0]}: keep alive")
-                self.request[1].sendto(bytes([opcode.KEEPALIVE]), self.client_address)
-            elif recv_opcode == opcode.PLAYERNAME:
-                name = json.loads(str(data[1:], "utf-8"))
-                self.server.log.info(
-                    f"Name of the player {self.client_address[0]} is: {name}"
-                )
-                if self.client_address[0] in self.server.remote_players:
-                    self.server.log.debug(
-                        f"the name of the player {self.client_address[0]} is updated"
-                    )
-                    with self.server.players_lock:
-                        self.server.remote_players[self.client_address[0]].name = name
-                else:
-                    player = Player(name=name, type=Type.NETWORK)
-                    self.server.log.debug(
-                        f"The player {self.client_address[0]} is created"
-                    )
-                    with self.server.players_lock:
-                        self.server.remote_players[self.client_address[0]] = player
-            elif recv_opcode == opcode.PLAYERUUID:
-                uuid = json.loads(str(data[1:], "utf-8"))
-                self.server.log.info(
-                    f"UUID of the player {self.client_address[0]} is: {uuid}"
-                )
-                if self.client_address[0] in self.server.remote_players:
-                    player = self.server.remote_players[self.client_address[0]]
-                    if player.uuid == uuid:
-                        self.server.log.debug(
-                            f"The player {self.client_address[0]} is already registred with this UUID"
-                        )
-                    else:
-                        player = Player(type=Type.NETWORK, uuid=uuid)
-                        self.server.log.debug(
-                            f"The player {self.client_address[0]} is re-created with a new UUID"
-                        )
-                        with self.server.players_lock:
-                            self.server.remote_players[self.client_address[0]] = player
-                else:
-                    player = Player(type=Type.NETWORK, uuid=uuid)
-                    self.server.log.debug(
-                        f"The player {self.client_address[0]} is created"
-                    )
-                    with self.server.players_lock:
-                        self.server.remote_players[self.client_address[0]] = player
-            elif recv_opcode == opcode.PLAYERCOLOR:
-                color = json.loads(str(data[1:], "utf-8"))
-                self.server.log.info(
-                    f"Color of the player {self.client_address[0]} is: {'WHITE' if color else 'BLACK'}"
-                )
-                if self.client_address[0] in self.server.remote_players:
-                    self.server.log.debug(
-                        f"the color of the player {self.client_address[0]} is updated"
-                    )
-                    with self.server.players_lock:
-                        self.server.remote_players[self.client_address[0]].color = color
-                else:
-                    player = Player(color=color, type=Type.NETWORK)
-                    self.server.log.debug(
-                        f"The player {self.client_address[0]} is created"
-                    )
-                    with self.server.players_lock:
-                        self.server.remote_players[self.client_address[0]] = player
-            elif recv_opcode == opcode.PLAYERFULL:
-                player_full = json.loads(str(data[1:], "utf-8"))
-                self.server.log.info(
-                    f"The characteristics of the player {self.client_address[0]} are:\n    UUID: {player_full['uuid']}\n    Name: {player_full['name']}\n    Color: {'WHITE' if player_full['color'] else 'BLACK'}"
-                )
-                player = Player(
-                    name=player_full["name"],
-                    color=player_full["color"],
-                    type=Type.NETWORK,
-                    uuid=player_full["uuid"],
-                )
-                with self.server.players_lock:
-                    self.server.remote_players[self.client_address[0]] = player
-            elif recv_opcode == opcode.GAMENAME:
-                game_name = json.loads(str(data[1:], "utf-8"))
-                self.server.log.info(
-                    f"Name of the game hosted by {self.client_address[0]} is: {game_name}"
-                )
-                if self.client_address[0] in self.server.remote_games:
-                    self.server.log.debug(
-                        f"The name of the game hosted by {self.client_address[0]} is updated"
-                    )
-                    with self.server.games_lock:
-                        self.server.remote_games[self.client_address[0]][
-                            "name"
-                        ] = game_name
-                else:
-                    game = {"name": game_name, "uuid": str(uuid4())}
-                    self.server.log.debug(
-                        f"The game hosted by {self.client_address[0]} is created"
-                    )
-                    with self.server.players_lock:
-                        self.server.remote_games[self.client_address[0]] = game
-            elif recv_opcode == opcode.GAMEUUID:
-                game_uuid = json.loads(str(data[1:], "utf-8"))
-                self.server.log.info(
-                    f"UUID of the game hosted by {self.client_address[0]} is: {game_uuid}"
-                )
-                if self.client_address[0] in self.server.remote_games:
-                    self.server.log.debug(
-                        f"The UUID of the game hosted by {self.client_address[0]} is updated"
-                    )
-                    with self.server.games_lock:
-                        self.server.remote_games[self.client_address[0]][
-                            "uuid"
-                        ] = game_uuid
-                else:
-                    game = {"name": "default", "uuid": game_uuid}
-                    self.server.log.debug(
-                        f"The game hosted by {self.client_address[0]} is created"
-                    )
-                    with self.server.players_lock:
-                        self.server.remote_games[self.client_address[0]] = game
-            elif recv_opcode == opcode.GAMEJOIN:
-                self.server.log.info(
-                    f"Player {self.client_address[0]} wants to join the local game"
-                )
-                with self.server.joined_lock:
-                    self.server.joined_players[self.client_address[0]] = True
-            elif recv_opcode == opcode.GAMELEAVE:
-                self.server.log.info(
-                    f"Player {self.client_address[0]} wants to leave the local game"
-                )
-                if self.client_address[0] in self.server.joined_players:
-                    with self.server.joined_lock:
-                        self.server.joined_players[self.client_address[0]] = False
-            elif recv_opcode == opcode.GAMESTART:
-                pass
+                self.server.log.debug(f"Reply to {self.client_address[0]}: we are still available !")
+                self.request[1].sendto(bytes([opcode.ACK]), self.client_address)
+            elif recv_opcode == opcode.ACK:
+                self.server.log.debug(f"{self.client_address[0]} has acknowledged the receipt of a KEEPALIVE message")
+                if self.client_address[0] in self.server._ack_received:
+                    with self.server.ack_lock:
+                        self.server._ack_received[self.client_address[0]] = True
+            elif recv_opcode == opcode.ACCEPT:
+                self.server.log.debug(f"{self.client_address[0]} accepts the invitation")
+                self.server._start_game_event.set()
+                self.server.shutdown()
+            elif recv_opcode == opcode.DECLINE:
+                self.server.log.debug(f"{self.client_address[0]} declines the invitation")
+                if self.server.rem_players[self.client_address[0]][lan.INVITING] == self._invited:
+                    with self.invited_lock:
+                        self._invited = None
+            elif recv_opcode == opcode.GAMEISREADY:
+                self.server.log.debug(f"The remote server {self.client_address[0]} is ready to accept a connection and begin a game.")
+                self.server._start_game_event.set()
+                self.server.shutdown()
             elif recv_opcode == opcode.QUIT:
-                self.server.log.info(
-                    f"The player {self.client_address[0]} is leaving the network"
-                )
-                if self.client_address[0] in self.server.play_addr:
-                    with self.server.addr_lock:
-                        self.server.play_addr.remove(self.client_address[0])
-                if self.client_address[0] in self.server.remote_players:
-                    with self.server.players_lock:
-                        del self.server.remote_players[self.client_address[0]]
-                if self.client_address[0] in self.server.remote_games:
-                    with self.server.games_lock:
-                        del self.server.remote_games[self.client_address[0]]
-                if self.client_address[0] in self.server.joined_players:
-                    with self.server.joined_lock:
-                        del self.server.joined_players[self.client_address[0]]
+                self.server.log.debug(f"{self.client_address[0]} quits the network.")
+                if self.client_address[0] in self.server.rem_players:
+                    with self.server.rem_play_lock:
+                        del self.server.rem_players[self.client_address[0]]
             else:
-                self.server.log.debug("Receipt of an unknown message")
+                self.server.log.warning("Receipt of an unknown message")
 
 
 class LANFinderServer(ThreadingUDPServer):
@@ -334,8 +210,10 @@ class LANFinderServer(ThreadingUDPServer):
     This server waits for an UDP message on the given port, on all IP interfaces. In the same time, it sends an UDP call on the broadcast addresses of all IP interfaces, in order to attempt to reach other same servers in the LAN.
 
     Parameters:
+            start_game_event:
+                    Event object that will be set when a game will be able to begin. The event is automatically set once a suitable acceptation of an invitation is received, or when the remote server indicates that it is ready to accept a connection and begin a game.
             port:
-                    The port number on which the server is listening to.
+                    The port number used to send messages to remote players. It defines also the port on which the server is listening to, unless a different port is specified by the `server_port` parameter.
             server_port:
                     If you want to specify a distinct port for the current server. Mainly for test or investigation purposes. In most cases leave it unmodified.
             logger:
@@ -359,15 +237,24 @@ class LANFinderServer(ThreadingUDPServer):
             local_game_name:
                     Name of the local game
             rem_players:
-                    List of available players on the LAN. Each value is a dictionnary {"address":IPv4_address_of_the_player, "player_uuid": uuid_of_the_player, "player_name": name_of_the_player, "player_color": color_of_the_player, "game_uuid": uuid_of_the_game, "game_name": name_of_the_game}
-            play_addr:
-                    list of the IPv4 addresses of the available remote players on the LAN. **read-only** (but mutable)
-            remote_games:
-                    dictionnary of all remote games, keyed by IP addresses. Each value is a dictionnary {"name": name_of_the_game, "uuid": UUID_of_the_game}. **read-only** (but mutable)
-            remote_players:
-                    dictionnary of all connected remote players, keyed by IP addresses. Each value is a domichess.game.Player object. **read-only** (but mutable)
-            joined_players:
-                    dictionnary of all remote players wishing to join the local game, keyed by IP addresses. Each value is a boolean. **read-only** (but mutable)
+                    Dictionnary of available players on the LAN, keyed by their IPv4 address. Each value is a dictionnary, with the following keys:
+                    
+                    | Key             | Value                 | Type  |
+                    | --------------- | --------------------- | ----- |
+                    | lan.PLAYERUUID  | UUID of the player    | str   |
+                    | lan.PLAYERNAME  | Name of the player    | str   |
+                    | lan.PLAYERCOLOR | Color of the player   | bool  |
+                    | lan.GAMEUUID    | UUID of the game      | str   |
+                    | lan.GAMENAME    | Name of the game      | str   |
+                    | lan.INVITING    | Inviting player       | bool  |
+            invited:
+                    UUID of the invited player (or `None` if no invitation is on going). **read-only**
+            ack_timeout:
+                    The maximum waiting time, in seconds, for an ACK reply after a KEEPALIVE message has been sent. Default is 5.0.
+            keepalive_period:
+                    The time, in seconds, between two successive transmissions of a KEEPALIVE message.Default is 30.0.
+            keep_flag:
+                    If `True`, KEEPALIVE are sent periodically. Those periodic sendings are stopped when switches to `False`. Default is `False`.
             started:
                     `True` if the server is running. `False` otherwise. **read-only**
             log (logging.Logger):
@@ -376,6 +263,7 @@ class LANFinderServer(ThreadingUDPServer):
 
     def __init__(
         self,
+        start_game_event: threading.Event,
         port: int,
         server_port: int | None = None,
         logger: logging.Logger | None = None,
@@ -399,8 +287,8 @@ class LANFinderServer(ThreadingUDPServer):
         )
 
         self._started = False
-
         self._port = port
+        self._start_game_event = start_game_event
 
         # local characteristics
         self._local_player_uuid = None
@@ -412,6 +300,15 @@ class LANFinderServer(ThreadingUDPServer):
         # Characteristics of all LAN remote players
         self._rem_players = dict()
         self.rem_play_lock = threading.Lock()
+        
+        # timers
+        self._ack_timeout = 5.0
+        self._keepalive_period = 30.0
+        self._ack_received = dict()
+        self.ack_lock = threading.Lock()
+        self._keep_flag = False
+        self._keep_cond = threading.Condition()
+        
         
         # Find the IPv4 address of the local host
         host = socket.gethostname()
@@ -440,6 +337,9 @@ class LANFinderServer(ThreadingUDPServer):
 
         self._remote_games = dict()
         self.games_lock = threading.Lock()
+        
+        self._invited = None
+        self.invited_lock = threading.Lock()
 
     @property
     def local_player_uuid(self) -> str:
@@ -471,7 +371,7 @@ class LANFinderServer(ThreadingUDPServer):
         return self._local_player_color
     
     @local_player_color.setter
-    def local_player_name(self, value):
+    def local_player_color(self, value):
         if isinstance(value, bool):
             self._local_player_color = value
             if self._started:
@@ -507,24 +407,58 @@ class LANFinderServer(ThreadingUDPServer):
         return self._rem_players
     
     @property
+    def invited(self) -> str | None:
+        # UUID of the invited player (or `None` if no invitation is on going)
+        return self._invited
+    
+    @property
     def started(self) -> bool:
         # `True` if the server is running. `False` otherwise.
         return self._started
 
     @property
-    def joined_players(self) -> dict:
-        # dictionnary of all remote players wishing to join the local game, keyed by IP addresses
-        return self._joined_players
-
+    def ack_timeout(self) -> float:
+        # The maximum waiting time, in seconds, for an ACK reply after a KEEPALIVE message has been sent. Default is 5.0.
+        return self._ack_timeout
+    
+    @ack_timeout.setter
+    def ack_timeout(self, value):
+        if (isinstance(value, float) or isinstance(value, int)) and (value > 0):
+            self._ack_timeout = value
+        else:
+            self.log.warning(f"`ack_timeout` attribute must be a strictly positive float or integer. Its value remains identical ({self._ack_timeout} s).")
+    
     @property
-    def remote_players(self) -> dict:
-        # dictionnary of all connected remote players, keyed by IP addresses
-        return self._remote_players
-
+    def keepalive_period(self) -> float:
+        # The time, in seconds, between two successive transmissions of a KEEPALIVE message. Default is 30.0.
+        return self._keepalive_period
+    
+    @keepalive_period.setter
+    def keepalive_period(self, value):
+        if (isinstance(value, float) or isinstance(value, int)) and (value > 0):
+            self._keepalive_period = value
+        else:
+            self.log.warning(f"`keepalive_period` attribute must be a strictly positive float or integer. Its value remains identical ({self._keepalive_period} s).")
+    
     @property
-    def remote_games(self) -> dict:
-        # dictionnary of all remote games, keyed by IP addresses
-        return self._remote_games
+    def keep_flag(self) -> bool:
+        # If `True`, KEEPALIVE are sent periodically. Those periodic sendings are stopped when switches to `False`. Default is `False`.
+        return self._keep_flag
+    
+    @keep_flag.setter
+    def keep_flag(self, value):
+        if isinstance(value, bool):
+            if value != self._keep_flag:
+                self._keep_flag = value
+                if value:
+                    self._keep_thread = threading.Thread(target = self._periodic_keepalive, daemon = True)
+                    self._keep_thread.start()
+                else:
+                    with self._keep_cond:
+                        self._keep_cond.notify()
+                    
+        else:
+            self.log.warning(f"`keep_flag` must be a boolean. Its value remains identical ({self._keep_flag}).")
 
     @property
     def local_address(self) -> str:
@@ -537,11 +471,6 @@ class LANFinderServer(ThreadingUDPServer):
         return self._port
 
     @property
-    def play_addr(self) -> list:
-        # list of the IPv4 addresses of the available remote players on the LAN.
-        return self._play_addr
-
-    @property
     def broad_addr(self) -> list:
         # List of string representations of the broadcast addresses, using the IPv4 form (like `100.50.200.5`)
         return self._broad_addr
@@ -551,7 +480,7 @@ class LANFinderServer(ThreadingUDPServer):
         # Logger used to track events that append when the instance is running. Child of the `logger` provided, or a fake logger with a null handler.
         return self._log
 
-    def broadcast(self, charac=0b00011111: int) -> int:
+    def broadcast(self, charac:int = 0b00011111) -> int:
         """
         Broadcasts one or more local characteristics on the LAN, to inform remote players for a change.
         
@@ -572,27 +501,31 @@ class LANFinderServer(ThreadingUDPServer):
             
             | Return value | Reason                                   |
             | ------------ | ---------------------------------------- |
-            | 0            | Characteristics successfully broadcasted |
+            | 0            | Characteristics broadcasted successfully |
             | 1            | No characteristic to broadcast           |
-            | 2            | No granted access to broadcast           |
+            | 2            | No granted access for broadcasting       |
              
         """
         msg = dict()
         if charac & 0b00000001:
-            msg[opcode.PLAYERUUID] = self._local_player_uuid
+            msg[lan.PLAYERUUID] = self._local_player_uuid
+            self._log.debug(f"Broadcast the local player UUID: {self._local_player_uuid}")
         if charac & 0b00000010:
-            msg[opcode.PLAYERNAME] = self._local_player_name
+            msg[lan.PLAYERNAME] = self._local_player_name
+            self._log.debug(f"Broadcast the local player name: {self._local_player_name}")
         if charac & 0b00000100:
-            msg[opcode.PLAYERCOLOR] = self._local_player_color
+            msg[lan.PLAYERCOLOR] = self._local_player_color
+            self._log.debug(f"Broadcast the local player color: {'WHITE' if self._local_player_color else 'BLACK'}")
         if charac & 0b00001000:
-            msg[opcode.GAMEUUID] = self._local_game_uuid
+            msg[lan.GAMEUUID] = self._local_game_uuid
+            self._log.debug(f"Broadcast the local game UUID: {self._local_game_uuid}")
         if charac & 0b00010000:
-            msg[opcode.GAMENAME] = self._local_game_name
+            msg[lan.GAMENAME] = self._local_game_name
+            self._log.debug(f"Broadcast the local game name: {self._local_game_name}")
         
         if len(msg) != 0:
             serialized_msg = json.dumps(msg)
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._log.debug("Broadcasts a local characteristic")
             try:
                 for broad in self.broad_addr:
                     sock.sendto(bytes([opcode.LANPLAYER])+ bytes(serialized_msg, "utf-8"), (broad, self.port))
@@ -605,7 +538,7 @@ class LANFinderServer(ThreadingUDPServer):
             self._log.debug("No characteristic to broadcast")
             return 1
     
-    def send_charac_to(self, addr:tuple, charac=0b00011111: int) -> int:
+    def send_charac_to(self, addr:tuple, charac:int = 0b00011111) -> int:
         """
         Sends one or more local characteristics to a specfic IPv4 address, to inform remote player for a change.
         
@@ -628,27 +561,31 @@ class LANFinderServer(ThreadingUDPServer):
             
             | Return value | Reason                            |
             | ------------ | --------------------------------- |
-            | 0            | Characteristics successfully send |
+            | 0            | Characteristics sent successfully |
             | 1            | No characteristic to send         |
             | 2            | Network error                     |
              
         """
         msg = dict()
         if charac & 0b00000001:
-            msg[opcode.PLAYERUUID] = self._local_player_uuid
+            msg[lan.PLAYERUUID] = self._local_player_uuid
+            self._log.debug(f"Send the local player UUID to {addr[0]}: {self._local_player_uuid}")
         if charac & 0b00000010:
-            msg[opcode.PLAYERNAME] = self._local_player_name
+            msg[lan.PLAYERNAME] = self._local_player_name
+            self._log.debug(f"Send the local player name to {addr[0]}: {self._local_player_name}")
         if charac & 0b00000100:
-            msg[opcode.PLAYERCOLOR] = self._local_player_color
+            msg[lan.PLAYERCOLOR] = self._local_player_color
+            self._log.debug(f"Send the local player color to {addr[0]}: {'WHITE' if self._local_player_color else 'BLACK'}")
         if charac & 0b00001000:
-            msg[opcode.GAMEUUID] = self._local_game_uuid
+            msg[lan.GAMEUUID] = self._local_game_uuid
+            self._log.debug(f"Send the local game UUID to {addr[0]}: {self._local_game_uuid}")
         if charac & 0b00010000:
-            msg[opcode.GAMENAME] = self._local_game_name
+            msg[lan.GAMENAME] = self._local_game_name
+            self._log.debug(f"Send the local game name to {addr[0]}: {self._local_game_name}")
         
         if len(msg) != 0:
             serialized_msg = json.dumps(msg)
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._log.debug("Sends a local characteristic")
             try:
                 sock.sendto(bytes([opcode.LANPLAYER])+ bytes(serialized_msg, "utf-8"), addr)
                 self._log.debug("Sent successful")
@@ -660,6 +597,243 @@ class LANFinderServer(ThreadingUDPServer):
             self._log.debug("No characteristic to send")
             return 1
     
+    def _check_ack(self, addr:str):
+        """
+        Checks whether an ACK message has been received from a specific address, after a KEEPALIVE message has been sent to it.
+        
+        If the ACK message has not been received, then removes the involved, remote player from the list of the available players (`rem_players` attribute).
+        
+        Parameters:
+            addr:
+                a string for the IPv4 address representation of the remote player, (eg: "192.168.4.7").
+        """
+        if (addr in self._ack_received) and not self._ack_received[addr]:
+            self._log.warning(f"{addr} has not acknowledged the KEEPALIVE message.")
+            with self.rem_play_lock:
+                del self._rem_players[addr]
+            with self.ack_lock:
+                del self._ack_received[addr]
+            self._log.warning(f"{addr} has been deleted from the list of the available remote players")
+    
+    def _send_keepalive(self, addr:tuple):
+        """
+        Sends a KEEPALIVE message to a specfic IPv4 address.
+        
+        Creates a timer (`threading.Timer` object) which checks whether an ACK message has been received, once the timeout defined by the `ack_timeout` attribute has passed.
+        If the ACK message has not been received, then removes the involved, remote player from the list of the available players (`rem_players` attribute).
+        
+        Parameters:
+            addr:
+                Tuple with 2 elements: a string for the IPv4 address representation of the remote player, and an integer for the port the remote player is listening to (eg: ("192.168.4.7", 5000) ).
+        
+        Returns:
+            One of the following values:
+            
+            | Return value | Reason                            |
+            | ------------ | --------------------------------- |
+            | 0            | KEEPALIVE sent successfully       |
+            | 1            | Network error                     |
+        
+        """
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._log.debug(f"A KEEPALIVE message is sent to {addr[0]}")
+        try:
+            with self.ack_lock:
+                self._ack_received[addr[0]] = False
+            sock.sendto(bytes([opcode.KEEPALIVE]), addr)
+            self._log.debug("KEEPALIVE sent successfully")
+        except OSError:
+            self._log.exception("Network error. No KEEPALIVE sent")
+            if addr[0] in self.ack_lock:
+                with self.ack_lock:
+                    del self._ack_received[addr[0]]
+            return 1
+        
+        ack_timer = threading.Timer(self._ack_timeout, self._check_ack, kwargs={"addr":addr[0]})
+        ack_timer.start()
+        return 0
+    
+    def _periodic_keepalive(self):
+        """
+        Sents a KEEPALIVE periodically to all known remote players.
+        
+        The period is stored in the `keepalive_period` attribute, and can be modified on the fly.
+        This method is blocking, and must be called in a separated thread. It returns when the `keep_flag` attribute is switched to `False`.
+        """
+        while self.keep_flag:
+            for addr in self._rem_players.keys():
+                self._send_keepalive((addr,self._port))
+            with self._keep_cond:
+                self._keep_cond.wait(timeout=self.keepalive_period)
+    
+    def invite(self, uuid:str):
+        """
+        Invites the remote player assigned by the given `uuid`.
+        
+        Parameters:
+            uuid:
+                Unique Universal Identifier of the player you wish to invite.
+        
+        Returns:
+            One of the following values:
+            
+            | Return value | Reason                                      |
+            | ------------ | ------------------------------------------- |
+            | 0            | Invitation sent successfully                |
+            | 1            | Unknown UUID                                |
+            | 2            | The guest has the same color as the inviter |
+            | 3            | Network error                               |
+            
+        """
+        msg = dict()
+        find_uuid = False
+        for addr, player in self._rem_players.items():
+            if player[lan.PLAYERUUID] == uuid:
+                find_uuid = True
+                break
+        if not find_uuid:
+            self._log.warning(f"{uuid} is not a UUID assigned to a known player. No invitation sent.")
+            return 1
+        elif player[lan.PLAYERCOLOR] == self._local_player_color:
+            self._log.warning(f"The remote player \"{player[lan.PLAYERNAME]}\" has the same color as the local one. No invitation sent.")
+            return 2
+        else:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            msg[lan.INVITING] = True
+            serialized_msg = json.dumps(msg)
+            try:
+                sock.sendto(bytes([opcode.LANPLAYER])+ bytes(serialized_msg, "utf-8"), (addr, self._port))
+                self._log.debug("Invitation sent successfully")
+                with self.invited_lock:
+                    self._invited = uuid
+                return 0
+            except OSError:
+                self._log.exception("Network error. No invitation sent")
+                return 3
+
+    def cancel_invite(self, uuid:str):
+        """
+        Cancels the invitation previously sent to the remote player assigned by the given `uuid`.
+        
+        It is safe to send a cancellation multiple times, or to a remote player never invited (it acts only as a "no-op" operation).
+        
+        Parameters:
+            uuid:
+                Unique Universal Identifier of the player you wish to cancel the invitation.
+        
+        Returns:
+            One of the following values:
+            
+            | Return value | Reason                                      |
+            | ------------ | ------------------------------------------- |
+            | 0            | Cancellation sent successfully              |
+            | 1            | Unknown UUID                                |
+            | 2            | Network error                               |
+            
+        """
+        msg = dict()
+        find_uuid = False
+        for addr, player in self._rem_players.items():
+            if player[lan.PLAYERUUID] == uuid:
+                find_uuid = True
+                break
+        if not find_uuid:
+            self._log.warning(f"{uuid} is not a UUID assigned to a known player. No cancellation sent.")
+            return 1
+        else:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            msg[lan.INVITING] = False
+            serialized_msg = json.dumps(msg)
+            try:
+                sock.sendto(bytes([opcode.LANPLAYER])+ bytes(serialized_msg, "utf-8"), (addr, self._port))
+                self._log.debug("Cancellation sent successfully")
+                with self.invited_lock:
+                    self._invited = None
+                return 0
+            except OSError:
+                self._log.exception("Network error. No cancellation sent")
+                return 3
+    
+    def accept(self, uuid:str):
+        """
+        Accepts the invitation provided by the remote player assigned by the given `uuid`.
+        
+        Parameters:
+            uuid:
+                Unique Universal Identifier of the player you wish to accept the invitation.
+        
+        Returns:
+            One of the following values:
+            
+            | Return value | Reason                                                           |
+            | ------------ | ---------------------------------------------------------------- |
+            | 0            | Acceptation sent successfully                                    |
+            | 1            | Unknown UUID                                                     |
+            | 2            | The player with given UUID did not previously send an invitation |
+            | 3            | Network error                                                    |
+            
+        """
+        find_uuid = False
+        for addr, player in self._rem_players.items():
+            if player[lan.PLAYERUUID] == uuid:
+                find_uuid = True
+                break
+        if not find_uuid:
+            self._log.warning(f"{uuid} is not a UUID assigned to a known player. No acceptation sent.")
+            return 1
+        elif (lan.INVITING not in player) or not player[lan.INVITING]:
+            self._log.warning(f"The remote player \"{player[lan.PLAYERNAME]}\" did not previously send an invitation. No acceptation sent.")
+            return 2
+        else:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.sendto(bytes([opcode.ACCEPT]), (addr, self._port))
+                self._log.debug("Acceptation sent successfully")
+                return 0
+            except OSError:
+                self._log.exception("Network error. No acceptation sent")
+                return 3
+
+    def decline(self, uuid:str):
+        """
+        Declines the invitation provided by the remote player assigned by the given `uuid`.
+        
+        Parameters:
+            uuid:
+                Unique Universal Identifier of the player you wish to decline the invitation.
+        
+        Returns:
+            One of the following values:
+            
+            | Return value | Reason                                                           |
+            | ------------ | ---------------------------------------------------------------- |
+            | 0            | Declination sent successfully                                    |
+            | 1            | Unknown UUID                                                     |
+            | 2            | The player with given UUID did not previously send an invitation |
+            | 3            | Network error                                                    |
+            
+        """
+        find_uuid = False
+        for addr, player in self._rem_players.items():
+            if player[lan.PLAYERUUID] == uuid:
+                find_uuid = True
+                break
+        if not find_uuid:
+            self._log.warning(f"{uuid} is not a UUID assigned to a known player. No declination sent.")
+            return 1
+        elif (lan.INVITING not in player) or not player[lan.INVITING]:
+            self._log.warning(f"The remote player \"{player[lan.PLAYERNAME]}\" did not previously send an invitation. No declination sent.")
+            return 2
+        else:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.sendto(bytes([opcode.DECLINE]), (addr, self._port))
+                self._log.debug("Declination sent successfully")
+                return 0
+            except OSError:
+                self._log.exception("Network error. No declination sent")
+                return 3
+
     def start(self, blocking: bool = False):
         """
         Starts the server and seeks other players on the LAN.
@@ -672,7 +846,7 @@ class LANFinderServer(ThreadingUDPServer):
         """
 
         if blocking:
-            self.find_remote_players()
+            self.broadcast()
             self._log.info("Server activated in blocking mode. Stop it with CTRL-C.")
             self._log.info(f"Server listening at port {self.port}")
             self._started = True
@@ -684,14 +858,56 @@ class LANFinderServer(ThreadingUDPServer):
             server_thread.daemon = True
             self._started = True
             server_thread.start()
-            self.find_remote_players()
+            self.broadcast()
 
     def shutdown(self):
         """
         Tell the serve_forever() loop to stop and wait until it does. shutdown() must be called while serve_forever() is running in a different thread otherwise it will deadlock.
         """
+        self.quit()
         super().shutdown()
         self._started = False
+
+    def quit_to(self, addr: tuple):
+        """
+        Informs a remote player that we leave the network.
+
+        Parameters:
+            addr:
+                Tuple with 2 elements: a string for the IPv4 address representation of the receiver, and an integer for the port the receiver is listening to (eg: ("192.168.4.7", 5000) ).
+
+        Returns:
+            One of the following values:
+            
+            | Return value | Reason                          |
+            | ------------ | ------------------------------- |
+            | 0            | Information sent successfully   |
+            | 1            | Unknown address                 |
+            | 2            | Network error                   |
+
+        """
+        if addr[0] in self._rem_players:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.sendto(bytes([opcode.QUIT]), (addr, self.port))
+                self._log.debug(f"Inform {addr[0]} that we quit the network game")
+                return 0
+            except OSError:
+                self._log.exception("Network error. No information sent")
+                return 2
+            finally:
+                with self.rem_play_lock:
+                    del self._rem_players[addr[0]]
+        else:
+            self._log.warning(f"{addr[0]} is an unknown player's address")
+            return 1
+
+    def quit(self):
+        """
+        Informs all remote players that we leave the network.
+        """
+        for addr in self._rem_players:
+            self.quit((addr, self._port))
 
     def find_remote_players(self):
         """
@@ -1034,31 +1250,7 @@ class LANFinderServer(ThreadingUDPServer):
                     f"{addr} is a known player, but does not wish to play with us"
                 )
 
-    def quit_game(self, addr: str):
-        """
-        Informs a remote player that we leave the network.
 
-        Parameters:
-                addr:
-                        IPv4 address of a remote player. Must be a valid and already known player's address
-
-        Raises:
-                ValueError:
-                        If `addr`is not a correct or an already known player's address
-        """
-        if addr in self.play_addr:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._log.debug(f"Inform {addr} that we quit the network game")
-            sock.sendto(bytes([opcode.QUIT]), (addr, self.port))
-        else:
-            raise ValueError(f"{addr} is not a correct player's address")
-
-    def quit_game_all(self):
-        """
-        Informs all remote players that we leave the network.
-        """
-        for addr in self.play_addr:
-            self.quit_game(addr)
 
 
 class PlayingHandler(StreamRequestHandler):

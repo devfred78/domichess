@@ -32,6 +32,7 @@ import logging
 import pathlib
 import random
 import subprocess
+from threading import Event
 from time import sleep
 
 # Third party modules
@@ -74,7 +75,7 @@ from domichess import (
 )
 from domichess.game import Player, Game
 from domichess.engine import Engine
-from domichess.network import opcode, LANFinderServer
+from domichess.network import opcode, lan, LANFinderServer
 
 # namedtuples
 # ------------
@@ -160,8 +161,9 @@ class Display:
         self._board_size = DEFAULT_BOARD_SIZE  # Board size, in pixels
         self._board_flipped = False  # True for white at the top and black at the bottom, False (the default) otherwise
         self._engine_path = engine_path
-        self.lan_finder = LANFinderServer(port=Port.FINDER_LAN_PORT, logger=self.log) # Players and games finder on the LAN
-        self._remote_opponents = {chess.WHITE:[["",""]], chess.BLACK:[["",""]]}
+        self.lan_start_game_event = Event()
+        self.lan_finder = LANFinderServer(start_game_event=self.lan_start_game_event, port=Port.FINDER_LAN_PORT, logger=self.log) # Players and games finder on the LAN
+        self._remote_opponents = {chess.WHITE:[["","",""]], chess.BLACK:[["","",""]]}
 		# Images for current player
         with open(
             pathlib.Path(__file__).parent
@@ -356,7 +358,7 @@ class Display:
         white_net_lan_radio = sg.Radio(text=Text.LAN, group_id=Key.WHITE_NET_RADIO_GROUP, default=True, enable_events=True, key=Key.WHITE_NET_LAN_RADIO)
         white_net_server_radio = sg.Radio(text=Text.REMOTE_SERVER, group_id=Key.WHITE_NET_RADIO_GROUP, default=False, enable_events=True, key=Key.WHITE_NET_SERVER_RADIO)
         
-        white_net_lan_table = sg.Table(values=self._remote_opponents[chess.WHITE], headings=[Text.PLAYER_NAME, Text.GAME_NAME], max_col_width=25, auto_size_columns=True, num_rows=3, vertical_scroll_only=True, enable_events=True, justification="left", key=Key.WHITE_NET_LAN_TABLE)
+        white_net_lan_table = sg.Table(values=self._remote_opponents[chess.WHITE], headings=[Text.PLAYER_NAME, Text.GAME_NAME, Text.INVITING], max_col_width=25, auto_size_columns=True, num_rows=3, vertical_scroll_only=True, enable_events=True, justification="left", key=Key.WHITE_NET_LAN_TABLE)
 
         white_net_server_text = sg.Text(text=Text.NOT_YET_IMPLEMENTED, key=Key.WHITE_NET_SERVER_TEXT, visible=False)
         
@@ -472,7 +474,7 @@ class Display:
         black_net_lan_radio = sg.Radio(text=Text.LAN, group_id=Key.BLACK_NET_RADIO_GROUP, default=True, enable_events=True, key=Key.BLACK_NET_LAN_RADIO)
         black_net_server_radio = sg.Radio(text=Text.REMOTE_SERVER, group_id=Key.BLACK_NET_RADIO_GROUP, default=False, enable_events=True, key=Key.BLACK_NET_SERVER_RADIO)
         
-        black_net_lan_table = sg.Table(values=self._remote_opponents[chess.BLACK], headings=[Text.PLAYER_NAME, Text.GAME_NAME], max_col_width=25, auto_size_columns=True, num_rows=3, vertical_scroll_only=True, enable_events=True, justification="left", key=Key.BLACK_NET_LAN_TABLE)
+        black_net_lan_table = sg.Table(values=self._remote_opponents[chess.BLACK], headings=[Text.PLAYER_NAME, Text.GAME_NAME, Text.INVITING], max_col_width=25, auto_size_columns=True, num_rows=3, vertical_scroll_only=True, enable_events=True, justification="left", key=Key.BLACK_NET_LAN_TABLE)
 
         black_net_server_text = sg.Text(text=Text.NOT_YET_IMPLEMENTED, key=Key.BLACK_NET_SERVER_TEXT, visible=False)
         
@@ -597,6 +599,10 @@ class Display:
                     disabled=True, visible=False
                 )
 
+        if len(self.engine_list) == 0:
+            self._window[Key.WHITE_CPU].update(disabled=True)
+            self._window[Key.BLACK_CPU].update(disabled=True)
+        
         # bind tkiner events
         board_image.bind("<Button-1>", "_left_click")
 
@@ -657,11 +663,17 @@ class Display:
         self._window[Key.CLAIM].update(visible=False, disabled=True)
         self._window[Key.WHITE_NAME].update(disabled=False)
         self._window[Key.WHITE_HUMAN].update(disabled=False)
-        self._window[Key.WHITE_CPU].update(disabled=False)
+        if len(self.engine_list) == 0:
+            self._window[Key.WHITE_CPU].update(disabled=True)
+        else:
+            self._window[Key.WHITE_CPU].update(disabled=False)
         self._window[Key.WHITE_NET].update(disabled=False)
         self._window[Key.BLACK_NAME].update(disabled=False)
         self._window[Key.BLACK_HUMAN].update(disabled=False)
-        self._window[Key.BLACK_CPU].update(disabled=False)
+        if len(self.engine_list) == 0:
+            self._window[Key.BLACK_CPU].update(disabled=True)
+        else:
+            self._window[Key.BLACK_CPU].update(disabled=False)
         self._window[Key.BLACK_NET].update(disabled=False)
 
         self._window[Key.CURRENT_GAME_NAME].update(disabled=False)
@@ -1220,13 +1232,13 @@ class Display:
         """
         if self.lan_finder.started:
             opponents = list()
-            for key, player in self.lan_finder.remote_players.items():
-                if player.color != color:
-                    opponents.append([player.name, self.lan_finder.remote_games[key]["name"] if key in self.lan_finder.remote_games else ""])
+            for lan_player in self.lan_finder.rem_players.values():
+                if lan_player[lan.PLAYERCOLOR] != color:
+                    opponents.append([lan_player[lan.PLAYERNAME],lan_player[lan.GAMENAME],"X" if lan_player[lan.INVITING] else ""])
             if len(opponents) == 0:
-                opponents = [["",""]]
+                opponents = [["","",""]]
         else:
-            opponents = [["",""]]
+            opponents = [["","",""]]
 
         if color == chess.WHITE:
             self._window[Key.BLACK_NET_LAN_TABLE].update(values=opponents)
@@ -1263,14 +1275,14 @@ class Display:
         Waits until a new remote player is available on the LAN.
         """
         self.log.debug("Waiting for a new available remote player...")
-        nb_remote_lan_players = len(self.lan_finder.play_addr)
+        nb_remote_lan_players = len(self.lan_finder.rem_players)
         while self.lan_finder.started:
-            if len(self.lan_finder.play_addr) > nb_remote_lan_players:
+            if len(self.lan_finder.rem_players) > nb_remote_lan_players:
                 self.log.debug("A new remote, LAN player is detected !")
                 break
-            elif len(self.lan_finder.play_addr) < nb_remote_lan_players:
+            elif len(self.lan_finder.rem_players) < nb_remote_lan_players:
                 self.log.debug("A remote player has leaved the network !")
-                nb_remote_lan_players = len(self.lan_finder.play_addr)
+                nb_remote_lan_players = len(self.lan_finder.rem_players)
             sleep(0.1) # To avoid to overload CPU
         if not self.lan_finder.started:
             self.log.debug("LAN finder server stopped: no more wait for a new remote player")
@@ -1287,11 +1299,11 @@ class Display:
         while self.lan_finder.started:
             for color in [chess.WHITE, chess.BLACK]:
                 opponents = list()
-                for key, player in self.lan_finder.remote_players.items():
-                    if player.color != color:
-                        opponents.append([player.name, self.lan_finder.remote_games[key]["name"] if key in self.lan_finder.remote_games else ""])
+                for lan_player in self.lan_finder.rem_players.values():
+                    if lan_player[lan.PLAYERCOLOR] != color:
+                        opponents.append([lan_player[lan.PLAYERNAME],lan_player[lan.GAMENAME],"X" if lan_player[lan.INVITING] else ""])
                 if len(opponents) == 0:
-                    opponents = [["",""]]
+                    opponents = [["","",""]]
                 if opponents != self._remote_opponents[color]:
                     if color == chess.WHITE:
                         change = "white"
@@ -1381,12 +1393,11 @@ class Display:
                     self._window[Key.START].update(disabled=False)
                     self.board_flipped = False  # board not flipped
                     if self.lan_finder.started and (values[Key.BLACK_TYPE] != Key.BLACK_NET):
-                        self.lan_finder.quit_game_all()
                         self.lan_finder.shutdown()
                     self._players[chess.WHITE].type = Type.HUMAN
                     self._players[chess.WHITE].name = values[Key.WHITE_NAME]
                     if self.lan_finder.started:
-                        self.lan_finder.send_player_update(opcode.PLAYERNAME, self._players[chess.WHITE].name)
+                        self.lan_finder.local_player_name = self._players[chess.WHITE].name
                 elif values[Key.WHITE_TYPE] == Key.WHITE_CPU:
                     self._window[Key.BLACK_NET].update(disabled=False)
                     if (
@@ -1402,12 +1413,11 @@ class Display:
                     else:
                         self.board_flipped = False
                     if self.lan_finder.started and (values[Key.BLACK_TYPE] != Key.BLACK_NET):
-                        self.lan_finder.quit_game_all()
                         self.lan_finder.shutdown()
                     self._players[chess.WHITE].type = Type.CPU
                     self._players[chess.WHITE].name = values[Key.WHITE_ENGINE_COMBO]
                     if self.lan_finder.started:
-                        self.lan_finder.send_player_update(opcode.PLAYERNAME, self._players[chess.WHITE].name)
+                        self.lan_finder.local_player_name = self._players[chess.WHITE].name
                 elif values[Key.WHITE_TYPE] == Key.WHITE_NET:
                     self._window[Key.BLACK_NET].update(disabled=True) # Only one remote player at a time
                     self._window[Key.START].update(
@@ -1420,10 +1430,15 @@ class Display:
                     else:
                         self.board_flipped = False
                     if self._window[Key.WHITE_NET_LAN_RADIO].get():
+                        self.lan_finder.local_player_uuid = self._players[chess.BLACK].uuid
+                        self.lan_finder.local_player_name = self._players[chess.BLACK].name
+                        self.lan_finder.local_player_color = chess.BLACK
+                        self.lan_finder.local_game_name = values[Key.CURRENT_GAME_NAME]
                         if not self.lan_finder.started:
                             self.lan_finder.start()
                         self._window.perform_long_operation(self._wait_for_new_remote_LAN_player, Key.NEW_REMOTE_PLAYER)
                         self._window.perform_long_operation(self._wait_for_change_remote_game_or_player_name, Key.CHANGE_OF_REMOTE_GAME_OR_PLAYER_NAME)
+                        # self.lan_finder.local_game_uuid = ??? TBC
                     self._players[chess.WHITE].type = Type.NETWORK
 
             elif event == Key.BLACK_TYPE:  # Select the black's type
@@ -1437,12 +1452,11 @@ class Display:
                     else:
                         self.board_flipped = True
                     if self.lan_finder.started and (values[Key.WHITE_TYPE] != Key.WHITE_NET):
-                        self.lan_finder.quit_game_all()
                         self.lan_finder.shutdown()
                     self._players[chess.BLACK].type = Type.HUMAN
                     self._players[chess.BLACK].name = values[Key.BLACK_NAME]
                     if self.lan_finder.started:
-                        self.lan_finder.send_player_update(opcode.PLAYERNAME, self._players[chess.BLACK].name)
+                        self.lan_finder.local_player_name = self._players[chess.BLACK].name
                 elif values[Key.BLACK_TYPE] == Key.BLACK_CPU:
                     self._window[Key.WHITE_NET].update(disabled=False)
                     if (
@@ -1453,12 +1467,11 @@ class Display:
                         self._window[Key.START].update(disabled=False)
                     self.board_flipped = False  # board not flipped
                     if self.lan_finder.started and (values[Key.WHITE_TYPE] != Key.WHITE_NET):
-                        self.lan_finder.quit_game_all()
                         self.lan_finder.shutdown()
                     self._players[chess.BLACK].type = Type.CPU
                     self._players[chess.BLACK].name = values[Key.BLACK_ENGINE_COMBO]
                     if self.lan_finder.started:
-                        self.lan_finder.send_player_update(opcode.PLAYERNAME, self._players[chess.BLACK].name)
+                        self.lan_finder.local_player_name = self._players[chess.BLACK].name
                 elif values[Key.BLACK_TYPE] == Key.BLACK_NET:
                     self._window[Key.WHITE_NET].update(disabled=True) # Only one remote player at a time
                     self._window[Key.START].update(
@@ -1466,25 +1479,30 @@ class Display:
                     )  # Network game not yet implemented
                     self.board_flipped = False  # board not flipped
                     if self._window[Key.BLACK_NET_LAN_RADIO].get():
+                        self.lan_finder.local_player_uuid = self._players[chess.WHITE].uuid
+                        self.lan_finder.local_player_name = self._players[chess.WHITE].name
+                        self.lan_finder.local_player_color = chess.WHITE
+                        self.lan_finder.local_game_name = values[Key.CURRENT_GAME_NAME]
                         if not self.lan_finder.started:
                             self.lan_finder.start()
                         self._window.perform_long_operation(self._wait_for_new_remote_LAN_player, Key.NEW_REMOTE_PLAYER)
                         self._window.perform_long_operation(self._wait_for_change_remote_game_or_player_name, Key.CHANGE_OF_REMOTE_GAME_OR_PLAYER_NAME)
+                        # self.lan_finder.local_game_uuid = ??? TBC
                     self._players[chess.BLACK].type = Type.NETWORK
 
             elif event == Key.CURRENT_GAME_NAME: # The name of the game has been changed
                  if self.lan_finder.started:
-                    self.lan_finder.send_game_charact(charact=opcode.GAMENAME, value=values[Key.CURRENT_GAME_NAME])
+                    self.lan_finder.local_game_name = values[Key.CURRENT_GAME_NAME]
             
             elif event == Key.WHITE_NAME: # The name of the human, white player has been changed
                 self._players[chess.WHITE].name = values[Key.WHITE_NAME]
                 if self.lan_finder.started:
-                    self.lan_finder.send_player_update(charact=opcode.PLAYERNAME, value=values[Key.WHITE_NAME])
+                    self.lan_finder.local_player_name = self._players[chess.WHITE].name
             
             elif event == Key.BLACK_NAME: # The name of the human, black player has been changed
                 self._players[chess.BLACK].name = values[Key.BLACK_NAME]
                 if self.lan_finder.started:
-                    self.lan_finder.send_player_update(charact=opcode.PLAYERNAME, value=values[Key.BLACK_NAME])
+                    self.lan_finder.local_player_name = self._players[chess.BLACK].name
             
             elif (
                 event == Key.WHITE_ENGINE_COMBO
@@ -1493,6 +1511,8 @@ class Display:
                 engine_name = values[Key.WHITE_ENGINE_COMBO]
                 self._update_cpu_tab(player, engine_name)
                 self._players[chess.WHITE].name = engine_name
+                if self.lan_finder.started:
+                    self.lan_finder.local_player_name = self._players[chess.WHITE].name
 
             elif (
                 event == Key.BLACK_ENGINE_COMBO
@@ -1501,6 +1521,8 @@ class Display:
                 engine_name = values[Key.BLACK_ENGINE_COMBO]
                 self._update_cpu_tab(player, engine_name)
                 self._players[chess.BLACK].name = engine_name
+                if self.lan_finder.started:
+                    self.lan_finder.local_player_name = self._players[chess.BLACK].name
 
             elif (
                 event == Key.WHITE_CPU_LEVEL_SLIDER
@@ -2191,14 +2213,14 @@ class Display:
             
             elif event == Key.NEW_REMOTE_PLAYER: # A new remote player is available
                 if self.lan_finder.started:
-                    if (values[Key.WHITE_TYPE] == Key.WHITE_NET) and self._window[Key.WHITE_NET_LAN_RADIO].get():
-                        self.lan_finder.send_player_characteristics(self._players[chess.BLACK])
-                    elif (values[Key.BLACK_TYPE] == Key.BLACK_NET) and self._window[Key.BLACK_NET_LAN_RADIO].get():
-                        self.lan_finder.send_player_characteristics(self._players[chess.WHITE])
-                    else:
-                        pass
+                    # if (values[Key.WHITE_TYPE] == Key.WHITE_NET) and self._window[Key.WHITE_NET_LAN_RADIO].get():
+                        # self.lan_finder.send_player_characteristics(self._players[chess.BLACK])
+                    # elif (values[Key.BLACK_TYPE] == Key.BLACK_NET) and self._window[Key.BLACK_NET_LAN_RADIO].get():
+                        # self.lan_finder.send_player_characteristics(self._players[chess.WHITE])
+                    # else:
+                        # pass
                     
-                    self.lan_finder.send_game_charact(charact=opcode.GAMENAME, value=values[Key.CURRENT_GAME_NAME])
+                    # self.lan_finder.send_game_charact(charact=opcode.GAMENAME, value=values[Key.CURRENT_GAME_NAME])
 
                     self._window.perform_long_operation(self._wait_for_new_remote_LAN_player, Key.NEW_REMOTE_PLAYER)
             

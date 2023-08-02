@@ -133,6 +133,7 @@ class DefaultText(StrEnum):  # Default texts displayed on the window
     WHITE_PLAYER = "White player"
     BLACK_PLAYER = "Black player"
     PLAYER_NAME = "Player name"
+    INVITING = "Inviting"
     WHITE_PLAYER_NAME = "White player's name:"
     BLACK_PLAYER_NAME = "Black player's name:"
     ENGINE_TURN_DURATION = "Turn duration (s):"
